@@ -14,15 +14,7 @@ from pathlib import Path
 
 def get_platform_info():
     """获取平台信息"""
-    system = platform.system().lower()
-    if system == "windows":
-        return "windows", ".exe"
-    elif system == "linux":
-        return "linux", ""
-    elif system == "darwin":
-        return "macos", ""
-    else:
-        return "unknown", ""
+    return "linux", ""
 
 def build_executable(script_name, output_name=None):
     """构建单个可执行文件"""
@@ -75,7 +67,7 @@ def main():
     
     # 构建文件列表
     builds = [
-        ("traffic_consumer.py", f"traffic_consumer_{platform_name}{ext}")
+        ("traffic_consumer.py", "traffic_consumer_linux")
     ]
     
     success_count = 0
