@@ -1,0 +1,82 @@
+name: Build Python Executables
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+jobs:
+  build-executables:
+    name: Build ${{ matrix.os }} Executable
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            ext: ""
+          - os: windows-latest
+            platform: windows
+            ext: ".exe"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build executable
+      run: |
+        pyinstaller --onefile --clean --noconfirm \
+          --hidden-import=requests \
+          --hidden-import=tqdm \
+          --hidden-import=colorama \
+          --hidden-import=apscheduler \
+          --name "traffic_consumer_${{ matrix.platform }}" \
+          traffic_consumer.py
+
+    - name: Test executable (Linux)
+      if: matrix.platform == 'linux'
+      run: |
+        chmod +x dist/traffic_consumer_linux
+        ./dist/traffic_consumer_linux --help
+
+    - name: Test executable (Windows)
+      if: matrix.platform == 'windows'
+      run: |
+        .\dist\traffic_consumer_windows.exe --help
+
+    - name: Upload executables
+      uses: actions/upload-artifact@v3
+      with:
+        name: traffic_consumer_${{ matrix.platform }}
+        path: dist/traffic_consumer_${{ matrix.platform }}${{ matrix.ext }}
+
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-executables
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          traffic_consumer_linux/*
+          traffic_consumer_windows/*
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
