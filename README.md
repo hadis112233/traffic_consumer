@@ -4,16 +4,18 @@
 
 ## 功能特点
 
-- 多线程下载，默认8线程
-- 不缓存到硬盘
-- 可配置下载速度限制
-- 实时显示流量消耗情况
-- 支持定时执行
-- 支持设置持续时间或下载次数
-- 支持Windows和Linux平台
-- 命令行界面，易于使用
-- 交互式命令行GUI配置界面
-- 支持Docker部署
+- **多线程下载**：默认8线程，可自定义线程数
+- **多URL支持**：支持多个下载源，提高稳定性和速度
+- **智能URL选择**：支持随机和轮询两种URL选择策略
+- **固定界面显示**：实时更新状态，不滚动日志，界面清晰
+- **内存下载**：不缓存到硬盘，纯内存操作
+- **速度控制**：可配置下载速度限制
+- **流量统计**：实时显示流量消耗和URL使用情况
+- **定时执行**：支持Cron表达式和间隔时间
+- **灵活控制**：支持设置持续时间、下载次数或流量限制
+- **配置管理**：保存和加载配置，支持多套配置方案
+- **跨平台**：支持Windows和Linux平台
+- **Docker部署**：提供Docker镜像，一键部署
 
 ## 安装
 
@@ -46,6 +48,9 @@ docker run -d --name traffic_consumer baitaotao521/traffic_consumer --threads 16
 | 示例 | 命令 | 说明 |
 |------|------|------|
 | **默认启动** | `docker run -d --name tc baitaotao521/traffic_consumer` | 使用默认设置启动，无限流量消耗 |
+| **指定多个URL** | `docker run -d --name tc baitaotao521/traffic_consumer -u "url1" "url2" "url3"` | 使用自定义的多个URL,(默认随机选择) |
+| **轮询策略** | `docker run -d --name tc baitaotao521/traffic_consumer --url-strategy round_robin` | 线程轮流使用不同URL |
+| **随机策略** | `docker run -d --name tc baitaotao521/traffic_consumer random` | 智能随机选择URL（默认） |
 | **多线程下载** | `docker run -d --name tc baitaotao521/traffic_consumer --threads 16` | 使用16个线程下载 |
 | **限制下载速度** | `docker run -d --name tc baitaotao521/traffic_consumer --limit 1` | 限制下载速度为1MB/s |
 | **流量限制** | `docker run -d --name tc baitaotao521/traffic_consumer --traffic-limit 100` | 消耗100MB流量后自动停止 |
@@ -55,117 +60,6 @@ docker run -d --name traffic_consumer baitaotao521/traffic_consumer --threads 16
 | **重启容器** | `docker restart tc` | 重新开始流量消耗 |
 | **删除容器** | `docker rm tc` | 删除流量消耗容器 |
 
-#### Docker环境变量配置
-
-您也可以通过环境变量来配置流量消耗器：
-
-```bash
-docker run -d --name tc \
-  -e THREADS=16 \
-  -e LIMIT=2 \
-  -e TRAFFIC_LIMIT=500 \
-  baitaotao521/traffic_consumer
-```
-
-## Linux 预编译版本
-
-1. 下载预编译的可执行文件
-
-```bash
-wget https://github.com/baitaotao521/data_consumers/releases/download/1.0.0/traffic_consumer
-```
-
-2. 添加执行权限
-
-```bash
-chmod +x traffic_consumer
-```
-
-3. 移动到系统路径（可选）
-
-```bash
-sudo mv traffic_consumer /usr/local/bin/
-```
-
-## Windows 版本
-
-Windows版本需要从源代码手动构建。(或者使用Docker镜像)
-
-## Docker版本使用方法
-
-使用Docker版本的流量消耗器非常简单，您可以直接从Docker Hub拉取镜像并运行，无需担心环境依赖问题。
-
-### 基本使用
-
-```bash
-# 拉取最新版本
-docker pull baitaotao521/traffic_consumer:latest
-
-# 使用默认参数运行
-docker run -d --name traffic_consumer baitaotao521/traffic_consumer
-```
-
-### 查看运行状态
-
-```bash
-# 查看容器日志（实时流量消耗情况）
-docker logs -f traffic_consumer
-
-# 查看容器状态
-docker ps -a | grep traffic_consumer
-```
-
-### 停止和删除容器
-
-```bash
-# 停止容器
-docker stop traffic_consumer
-
-# 删除容器
-docker rm traffic_consumer
-```
-
-### 使用自定义参数
-
-您可以在运行容器时添加自定义参数，例如：
-
-```bash
-# 使用16线程下载，限速2MB/s，消耗100MB流量后停止
-docker run -d --name traffic_consumer baitaotao521/traffic_consumer --threads 16 --limit 2 --traffic-limit 100
-```
-
-### 使用环境变量
-
-您也可以使用环境变量来配置流量消耗器：
-
-```bash
-docker run -d --name traffic_consumer \
-  -e THREADS=16 \
-  -e LIMIT=2 \
-  -e TRAFFIC_LIMIT=100 \
-  baitaotao521/traffic_consumer
-```
-
-### 定时任务
-
-您可以使用Docker的定时任务功能，定期运行流量消耗器：
-
-```bash
-# 每天凌晨2点运行，消耗500MB流量后停止
-docker run -d --name traffic_consumer \
-  --restart unless-stopped \
-  baitaotao521/traffic_consumer --cron "0 2 * * *" --traffic-limit 500
-```
-
-### 持久化配置
-
-如果您需要持久化配置和统计数据，可以挂载卷：
-
-```bash
-docker run -d --name traffic_consumer \
-  -v traffic_consumer_data:/root/.traffic_consumer \
-  baitaotao521/traffic_consumer
-```
 
 ## 具体说明(以linux预编译版本为例,参数docker版通用)
 
@@ -184,36 +78,45 @@ traffic_consumer
 ```
 
 这将使用默认设置启动流量消耗器：
-- URL: https://img.mcloud.139.com/material_prod/material_media/20221128/1669626861087.png
+- URLs: 4个内置测试URL（包括Cloudflare、OVH等测试文件）
+- URL选择策略: 随机选择（智能加权，确保分布均匀）
 - 线程数: 8
 - 不限速
+- 固定界面显示，实时更新状态
 - 无限制运行，直到手动停止(Ctrl+C)
 
 | 示例 | 命令 | 说明 |
 |------|------|------|
-| **默认启动** | `./traffic_consumer` | 使用默认设置启动，无限流量消耗，直到手动停止 |
-| **多线程下载** | `./traffic_consumer -t 16` | 使用16个线程下载，无限流量消耗，直到手动停止 |
+| **默认启动** | `./traffic_consumer` | 使用4个内置URL，随机策略，8线程，固定界面显示 |
+| **指定多个URL** | `./traffic_consumer -u "url1" "url2" "url3"` | 使用自定义的多个URL |
+| **轮询策略** | `./traffic_consumer --url-strategy round_robin` | 线程轮流使用不同URL |
+| **随机策略** | `./traffic_consumer --url-strategy random` | 智能随机选择URL（默认） |
+| **多线程下载** | `./traffic_consumer -t 16` | 使用16个线程下载，固定界面显示线程状态 |
 | **低线程下载** | `./traffic_consumer -t 4` | 使用4个线程下载，适合网络条件较差的环境 |
-| **限制下载速度** | `./traffic_consumer -l 1` | 限制下载速度为1MB/s，无限流量消耗，直到手动停止 |
+| **限制下载速度** | `./traffic_consumer -l 1` | 限制下载速度为1MB/s，实时显示速度 |
 | **高速下载** | `./traffic_consumer -l 10` | 限制下载速度为10MB/s，适合测试高速网络 |
 | **限时运行** | `./traffic_consumer -d 600` | 运行10分钟后自动停止 |
 | **短时测试** | `./traffic_consumer -d 60` | 运行1分钟后自动停止，适合快速测试 |
-| **限制下载次数** | `./traffic_consumer -c 100` | 下载100次后自动停止 |
-| **自定义URL** | `./traffic_consumer -u https://example.com/largefile.zip` | 下载指定URL的文件 |
+| **限制下载次数** | `./traffic_consumer -c 100` | 下载100次后自动停止，显示URL使用统计 |
+| **组合使用** | `./traffic_consumer -t 8 -c 50 --url-strategy round_robin` | 8线程，轮询策略，50次后停止 |
 
 ### 命令行参数
 
 ```
-usage: traffic_consumer [-h] [-u URL] [-t THREADS] [-l LIMIT] [-d DURATION] [-c COUNT] [--cron CRON]
+usage: traffic_consumer [-h] [-u URLS [URLS ...]] [--url-strategy {random,round_robin}]
+                        [-t THREADS] [-l LIMIT] [-d DURATION] [-c COUNT] [--cron CRON]
                         [--traffic-limit TRAFFIC_LIMIT] [--interval INTERVAL]
                         [--config CONFIG] [--save-config] [--load-config] [--list-configs] [--delete-config]
                         [--show-stats] [--stats-limit STATS_LIMIT]
 
 流量消耗器 - 用于测试网络带宽和流量消耗
 
-optional arguments:
+主要参数:
   -h, --help            显示帮助信息并退出
-  -u URL, --url URL     要下载的URL (默认: https://img.mcloud.139.com/material_prod/material_media/20221128/1669626861087.png)
+  -u URLS [URLS ...], --urls URLS [URLS ...]
+                        要下载的URL列表，可以指定多个URL (默认: 使用内置的4个测试URL)
+  --url-strategy {random,round_robin}
+                        URL选择策略: random(随机选择) 或 round_robin(轮询选择) (默认: random)
   -t THREADS, --threads THREADS
                         下载线程数 (默认: 8)
   -l LIMIT, --limit LIMIT
@@ -244,6 +147,7 @@ optional arguments:
 
 ### 目录
 - [基本使用](#基本使用)
+- [多URL和策略](#多url和策略)
 - [流量控制](#流量控制)
 - [定时执行](#定时执行)
 - [配置管理](#配置管理)
@@ -256,15 +160,28 @@ optional arguments:
 
 | 示例 | 命令 | 说明 |
 |------|------|------|
-| **默认启动** | `./traffic_consumer` | 使用默认设置启动，无限流量消耗，直到手动停止 |
-| **多线程下载** | `./traffic_consumer -t 16` | 使用16个线程下载，无限流量消耗，直到手动停止 |
+| **默认启动** | `./traffic_consumer` | 使用内置URL，随机策略，8线程，固定界面显示 |
+| **多线程下载** | `./traffic_consumer -t 16` | 使用16个线程下载，实时显示每个线程状态 |
 | **低线程下载** | `./traffic_consumer -t 4` | 使用4个线程下载，适合网络条件较差的环境 |
-| **限制下载速度** | `./traffic_consumer -l 1` | 限制下载速度为1MB/s，无限流量消耗，直到手动停止 |
+| **限制下载速度** | `./traffic_consumer -l 1` | 限制下载速度为1MB/s，实时显示速度 |
 | **高速下载** | `./traffic_consumer -l 10` | 限制下载速度为10MB/s，适合测试高速网络 |
 | **限时运行** | `./traffic_consumer -d 600` | 运行10分钟后自动停止 |
 | **短时测试** | `./traffic_consumer -d 60` | 运行1分钟后自动停止，适合快速测试 |
-| **限制下载次数** | `./traffic_consumer -c 100` | 下载100次后自动停止 |
-| **自定义URL** | `./traffic_consumer -u https://example.com/largefile.zip` | 下载指定URL的文件 |
+| **限制下载次数** | `./traffic_consumer -c 100` | 下载100次后自动停止，显示URL使用统计 |
+
+---
+
+### 多URL和策略
+
+| 示例 | 命令 | 说明 |
+|------|------|------|
+| **指定单个URL** | `./traffic_consumer -u "https://example.com/file.zip"` | 使用单个自定义URL |
+| **指定多个URL** | `./traffic_consumer -u "url1" "url2" "url3"` | 使用多个自定义URL |
+| **随机策略** | `./traffic_consumer --url-strategy random` | 智能随机选择URL，确保分布均匀（默认） |
+| **轮询策略** | `./traffic_consumer --url-strategy round_robin` | 线程按顺序轮流使用不同URL |
+| **多URL+轮询** | `./traffic_consumer -u "url1" "url2" --url-strategy round_robin -t 4` | 4个线程轮流使用2个URL |
+| **多URL+随机** | `./traffic_consumer -u "url1" "url2" "url3" --url-strategy random -c 20` | 随机选择3个URL，下载20次后显示使用统计 |
+| **测试URL分布** | `./traffic_consumer -c 50 --url-strategy random` | 下载50次，查看随机策略的URL分布情况 |
 
 ---
 
@@ -329,8 +246,24 @@ optional arguments:
 #### 精确流量控制方案
 
 ```bash
-# 工作日白天每小时消耗100MB流量，限速2MB/s，实时显示状态
-./traffic_consumer --cron "0 9-18 * * 1-5" --traffic-limit 100 -l 2 -t 8 --config "workday_hourly" --save-config
+# 工作日白天每小时消耗100MB流量，限速2MB/s，使用轮询策略，实时显示状态
+./traffic_consumer --cron "0 9-18 * * 1-5" --traffic-limit 100 -l 2 -t 8 --url-strategy round_robin --config "workday_hourly" --save-config
+```
+
+#### 多URL负载均衡方案
+
+```bash
+# 使用多个CDN源，随机策略确保负载均衡
+./traffic_consumer -u "https://speed.cloudflare.com/__down?bytes=100000000" \
+                      "https://proof.ovh.net/files/100Mb.dat" \
+                      "https://download.thinkbroadband.com/100MB.zip" \
+                   --url-strategy random -t 12 --traffic-limit 500 --config "multi_cdn" --save-config
+
+# 使用轮询策略确保每个URL都被均匀使用
+./traffic_consumer -u "https://mirror1.example.com/testfile" \
+                      "https://mirror2.example.com/testfile" \
+                      "https://mirror3.example.com/testfile" \
+                   --url-strategy round_robin -t 9 -c 100 --config "mirror_test" --save-config
 ```
 
 #### 网络负载测试方案
@@ -371,11 +304,15 @@ optional arguments:
 # 周末：每小时消耗200MB流量，不限速，使用16线程
 # 所有配置保存为"weekly_plan"
 
-# 工作日配置
-./traffic_consumer --cron "*/30 9-18 * * 1-5" --traffic-limit 100 -l 2 -t 12 -u https://example.com/testfile.bin --config "workday_config" --save-config
+# 工作日配置 - 使用轮询策略确保URL均匀分布
+./traffic_consumer --cron "*/30 9-18 * * 1-5" --traffic-limit 100 -l 2 -t 12 \
+                   -u "https://cdn1.example.com/test" "https://cdn2.example.com/test" \
+                   --url-strategy round_robin --config "workday_config" --save-config
 
-# 周末配置
-./traffic_consumer --cron "0 10-22 * * 0,6" --traffic-limit 200 -l 0 -t 16 -u https://example.com/testfile.bin --config "weekend_config" --save-config
+# 周末配置 - 使用随机策略和更多URL源
+./traffic_consumer --cron "0 10-22 * * 0,6" --traffic-limit 200 -l 0 -t 16 \
+                   -u "https://cdn1.example.com/test" "https://cdn2.example.com/test" "https://cdn3.example.com/test" \
+                   --url-strategy random --config "weekend_config" --save-config
 ```
 
 #### 大流量消耗示例
