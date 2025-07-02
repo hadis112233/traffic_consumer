@@ -35,14 +35,7 @@ jobs:
         pip install pyinstaller
 
     - name: Build executable
-      run: |
-        pyinstaller --onefile --clean --noconfirm \
-          --hidden-import=requests \
-          --hidden-import=tqdm \
-          --hidden-import=colorama \
-          --hidden-import=apscheduler \
-          --name "traffic_consumer_${{ matrix.platform }}" \
-          traffic_consumer.py
+      run: python -m PyInstaller --onefile --clean --noconfirm --hidden-import=requests --hidden-import=tqdm --hidden-import=colorama --hidden-import=apscheduler --name "traffic_consumer_${{ matrix.platform }}" traffic_consumer.py
 
     - name: Test executable (Linux)
       if: matrix.platform == 'linux'

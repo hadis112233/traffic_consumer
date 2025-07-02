@@ -36,24 +36,17 @@ def build_executable(script_name, output_name=None):
     
     # PyInstaller命令
     cmd = [
-        "pyinstaller",
+        sys.executable, "-m", "PyInstaller",
         "--onefile",
         "--clean",
         "--noconfirm",
+        "--hidden-import=requests",
+        "--hidden-import=tqdm",
+        "--hidden-import=colorama",
+        "--hidden-import=apscheduler",
         "--name", output_name,
         script_name
     ]
-    
-    # 添加隐藏导入（如果需要）
-    hidden_imports = [
-        "requests",
-        "tqdm",
-        "colorama",
-        "apscheduler"
-    ]
-    
-    for imp in hidden_imports:
-        cmd.extend(["--hidden-import", imp])
     
     # 执行构建
     try:
