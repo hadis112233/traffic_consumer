@@ -31,7 +31,8 @@ jobs:
     - name: Build executable
       run: |
         $separator = if ("${{ runner.os }}" -eq "Windows") {";"} else {":"}
-        $pyinstaller_command = "python -m PyInstaller --onefile --clean --noconfirm --name traffic_consumer_${{ runner.os }} --hidden-import=engineio.async_drivers.threading --add-data templates${separator}templates traffic_consumer.py"
+        $addData = "--add-data `"templates${separator}templates`""
+        $pyinstaller_command = "python -m PyInstaller --onefile --clean --noconfirm --name traffic_consumer_${{ runner.os }} --hidden-import=engineio.async_drivers.threading ${addData} traffic_consumer.py"
         if ("${{ runner.os }}" -eq "Windows") {
           $pyinstaller_command += " --hidden-import=win32timezone"
         }
