@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='apscheduler')
+
 """
 流量消耗器 - 用于测试网络带宽和流量消耗
 
