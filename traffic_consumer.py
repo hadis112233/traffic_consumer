@@ -85,55 +85,57 @@ class TrafficConsumer:
     def __init__(self, urls=None, threads=1, limit_speed=0,
                  duration=None, count=None, cron_expr=None,
                  traffic_limit=None, interval=None,
-                 config_name="default", url_strategy="random", logger=None):
-        self.urls = urls if urls else DEFAULT_URLS
-        self.threads = threads if threads is not None else 1
-        self.limit_speed = limit_speed if limit_speed is not None else 0  # 限速，单位MB/s，0表示不限速
-        self.duration = duration  # 持续时间，单位秒
-        self.count = count  # 下载次数
-        self.cron_expr = cron_expr  # Cron表达式
-        self.traffic_limit = traffic_limit  # 流量限制，单位MB
-        self.interval = interval  # 间隔时间，单位分钟
-        self.config_name = config_name if config_name else "default"
-        self.url_strategy = url_strategy if url_strategy else "random"  # URL选择策略: "random" 或 "round_robin"
-        self.logger = logger if logger else self._default_logger
-        
-        # 统计数据
-        self.lock = threading.Lock()
-        self.total_bytes = 0
-        self.start_time = None
-        self.active = False
-        self.download_count = 0
+                 config_name="default", url_strategy="random", logger=None, history_callback=None):
+       self.urls = urls if urls else DEFAULT_URLS
+       self.threads = threads if threads is not None else 1
+       self.limit_speed = limit_speed if limit_speed is not None else 0  # 限速，单位MB/s，0表示不限速
+       self.duration = duration  # 持续时间，单位秒
+       self.count = count  # 下载次数
+       self.cron_expr = cron_expr  # Cron表达式
+       self.traffic_limit = traffic_limit  # 流量限制，单位MB
+       self.interval = interval  # 间隔时间，单位分钟
+       self.config_name = config_name if config_name else "default"
+       self.url_strategy = url_strategy if url_strategy else "random"  # URL选择策略: "random" 或 "round_robin"
+       self.logger = logger if logger else self._default_logger
+       self.history_callback = history_callback
+       
+       # 统计数据
+       self.lock = threading.Lock()
+       self.total_bytes = 0
+       self.start_time = None
+       self.active = False
+       self.download_count = 0
 
-        # 进度条
-        self.progress_bar = None
+       # 进度条
+       self.progress_bar = None
 
-        # 调度器
-        self.scheduler = None
+       # 调度器
+       self.scheduler = None
 
-        # 历史统计数据
-        self.history = []
+       # 历史统计数据
+       self.history = []
+       self.MAX_HISTORY_ENTRIES = 50 # 限制历史记录最大条数
+       
+       # 状态
+       self.status = "初始化"
+       self.next_run_time = None
 
-        # 状态
-        self.status = "初始化"
-        self.next_run_time = None
+       # URL轮询计数器
+       self.url_counter = 0
+       self.url_counter_lock = threading.Lock()
 
-        # URL轮询计数器
-        self.url_counter = 0
-        self.url_counter_lock = threading.Lock()
+       # URL使用统计
+       self.url_usage = {url: 0 for url in self.urls}
 
-        # URL使用统计
-        self.url_usage = {url: 0 for url in self.urls}
+       # 线程当前使用的URL
+       self.thread_current_urls = {}
 
-        # 线程当前使用的URL
-        self.thread_current_urls = {}
+       # 加权随机选择器 - 确保URL分布更均匀
+       self.url_weights = [1.0] * len(self.urls)  # 初始权重相等
+       self.weight_lock = threading.Lock()
 
-        # 加权随机选择器 - 确保URL分布更均匀
-        self.url_weights = [1.0] * len(self.urls)  # 初始权重相等
-        self.weight_lock = threading.Lock()
-
-        # 线程URL分配记录（避免重复打印）
-        self.thread_url_assignments = {}
+       # 线程URL分配记录（避免重复打印）
+       self.thread_url_assignments = {}
 
     def _default_logger(self, message, color=None):
         if color:
@@ -375,6 +377,7 @@ class TrafficConsumer:
             time.sleep(1)
         
         # 最终统计
+        self.add_history_record("completed", self.total_bytes)
         self.save_stats()
         
         elapsed_time = time.time() - self.start_time
@@ -401,6 +404,22 @@ class TrafficConsumer:
         if self.next_run_time:
             next_run = self.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
             self.logger(f"下一次执行时间: {next_run}", Fore.CYAN)
+
+    def add_history_record(self, result, bytes_consumed):
+        """添加一条历史记录"""
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "result": result,
+            "bytes_consumed": self.format_bytes(bytes_consumed)
+        }
+        self.history.insert(0, record) # 插入到开头
+        # 限制历史记录的大小
+        if len(self.history) > self.MAX_HISTORY_ENTRIES:
+            self.history.pop()
+        
+        # 如果有回调，则调用它
+        if self.history_callback:
+            self.history_callback(record)
 
     def clear_and_display_interface(self):
         """清屏并显示固定界面"""
@@ -660,124 +679,106 @@ class TrafficConsumer:
             print(f"{Fore.RED}显示统计数据出错: {e}{Style.RESET_ALL}")
     
     def setup_scheduler(self):
-        """设置调度器"""
-        if not self.cron_expr:
+        """设置调度器 (cron 或 interval)"""
+        if not self.cron_expr and not self.interval:
             return
+
+        self.scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+        job = None
         
-        self.scheduler = BackgroundScheduler()
-        
-        # 添加任务
-        job = self.scheduler.add_job(
-            self.scheduled_run,
-            CronTrigger.from_crontab(self.cron_expr)
-        )
-        
-        # 获取下一次执行时间
-        cron_trigger = CronTrigger.from_crontab(self.cron_expr)
-        # 确保使用UTC时区
-        self.next_run_time = cron_trigger.get_next_fire_time(None, datetime.now(timezone.utc))
-        
-        # 启动调度器
-        self.scheduler.start()
-        
-        print(f"{Fore.CYAN}已设置Cron调度: {self.cron_expr}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}下一次执行时间: {self.next_run_time.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}程序将实时显示状态，按Ctrl+C停止{Style.RESET_ALL}")
-        
-        # 设置信号处理
-        signal.signal(signal.SIGINT, self.handle_signal)
-        signal.signal(signal.SIGTERM, self.handle_signal)
-        
-        # 更新状态
-        self.status = "等待执行"
-        
-        # 保持主线程运行，同时实时显示状态
         try:
-            while True:
-                # 计算剩余时间
-                remaining = self.next_run_time - datetime.now(self.next_run_time.tzinfo if hasattr(self.next_run_time, 'tzinfo') and self.next_run_time.tzinfo is not None else None)
-                if remaining.total_seconds() <= 0:
-                    # 如果到达执行时间，等待调度器触发任务
+            if self.cron_expr:
+                trigger = CronTrigger.from_crontab(self.cron_expr)
+                job = self.scheduler.add_job(self.scheduled_run, trigger, id='traffic_consumer_job')
+                self.logger(f"{Fore.CYAN}已设置Cron调度: {self.cron_expr}{Style.RESET_ALL}")
+            elif self.interval:
+                job = self.scheduler.add_job(self.scheduled_run, 'interval', minutes=self.interval, id='traffic_consumer_job')
+                self.logger(f"{Fore.CYAN}已设置间隔调度: 每{self.interval}分钟执行一次{Style.RESET_ALL}")
+
+            self.scheduler.start()
+            
+            if job:
+                # 重新从调度器获取作业以确保状态是最新的
+                job_instance = self.scheduler.get_job(job.id)
+                if job_instance and job_instance.next_run_time:
+                    self.next_run_time = job_instance.next_run_time
+                    self.logger(f"{Fore.CYAN}下一次执行时间: {self.next_run_time.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
+            self.logger(f"{Fore.CYAN}调度器已启动。按Ctrl+C停止。{Style.RESET_ALL}")
+            
+            self.status = "等待执行"
+            
+            # 在CLI模式下，保持主线程活动以显示倒计时
+            is_cli_mode = self.logger == self._default_logger
+            if is_cli_mode:
+                signal.signal(signal.SIGINT, self.handle_signal)
+                signal.signal(signal.SIGTERM, self.handle_signal)
+                while self.scheduler.running:
+                    if self.next_run_time:
+                        remaining = self.next_run_time - datetime.now(self.next_run_time.tzinfo)
+                        if remaining.total_seconds() < 0:
+                            # 等待任务触发后更新时间
+                            time.sleep(1)
+                            if self.scheduler.get_jobs():
+                                self.next_run_time = self.scheduler.get_jobs()[0].next_run_time
+                            continue
+
+                        remaining_str = str(remaining).split('.')[0]
+                        status_msg = f"\r{Fore.CYAN}状态: {self.status} | 距离下次执行还有: {remaining_str}{Style.RESET_ALL}"
+                        sys.stdout.write(status_msg)
+                        sys.stdout.flush()
                     time.sleep(1)
-                    continue
-                
-                # 格式化剩余时间
-                remaining_str = str(remaining).split('.')[0]  # 移除毫秒
-                
-                # 显示状态和倒计时
-                status_msg = f"{Fore.CYAN}状态: {self.status} | 距离下次执行还有: {remaining_str}{Style.RESET_ALL}"
-                sys.stdout.write(f"\r{status_msg}")
-                sys.stdout.flush()
-                
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}接收到中断信号，正在停止调度器...{Style.RESET_ALL}")
-            self.scheduler.shutdown()
-    
+
+        except ValueError as e:
+            self.logger(f"{Fore.RED}无效的调度配置: {e}{Style.RESET_ALL}")
+        except Exception as e:
+            self.logger(f"{Fore.RED}启动调度器时出错: {e}{Style.RESET_ALL}")
+
     def handle_signal(self, signum, frame):
         """处理信号"""
-        print(f"\n{Fore.YELLOW}接收到信号 {signum}，正在停止...{Style.RESET_ALL}")
-        if self.scheduler:
+        self.logger(f"\n{Fore.YELLOW}接收到信号 {signum}，正在停止...{Style.RESET_ALL}")
+        if self.scheduler and self.scheduler.running:
             self.scheduler.shutdown()
+        self.active = False
         sys.exit(0)
-    
+
     def scheduled_run(self):
-        """定时执行的任务"""
-        print(f"\n{Fore.CYAN}[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始定时任务{Style.RESET_ALL}")
+        """由调度器执行的任务"""
+        self.logger(f"\n{Fore.CYAN}[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始执行计划任务...{Style.RESET_ALL}")
         
-        # 更新状态
-        self.status = "正在执行"
+        # 重置统计数据以进行新的运行
+        with self.lock:
+            self.total_bytes = 0
+            self.start_time = time.time()
+            self.download_count = 0
+            self.thread_current_urls = {}
+            self.url_usage = {url: 0 for url in self.urls}
+
+        # 记录任务开始
+        start_bytes = self.total_bytes
+        try:
+            self._run_task()
+            end_bytes = self.total_bytes
+            # 记录任务完成
+            self.add_history_record("completed_scheduled", end_bytes - start_bytes)
+        except Exception as e:
+            self.logger(f"{Fore.RED}计划任务执行失败: {e}{Style.RESET_ALL}", Fore.RED)
+            self.add_history_record("failed", 0) # 记录失败
+
+        # 从调度器获取下一次运行时间
+        if self.scheduler and self.scheduler.running and self.scheduler.get_jobs():
+            self.next_run_time = self.scheduler.get_jobs()[0].next_run_time
         
-        # 创建新的消费器实例并运行
-        consumer = TrafficConsumer(
-            urls=self.urls,
-            url_strategy=self.url_strategy,
-            threads=self.threads,
-            limit_speed=self.limit_speed,
-            duration=self.duration,
-            count=self.count,
-            traffic_limit=self.traffic_limit,
-            interval=None,  # 不传递interval，避免嵌套调度
-            config_name=self.config_name
-        )
-        consumer.start()
-        
-        # 更新下一次执行时间
-        if self.interval:
-            # 对于interval触发器，直接计算下一次执行时间
-            self.next_run_time = datetime.now(timezone.utc) + timedelta(minutes=self.interval)
-        elif self.cron_expr:
-            # 对于cron触发器，使用触发器计算下一次执行时间
-            try:
-                # 使用cron表达式计算下一次执行时间
-                cron_trigger = CronTrigger.from_crontab(self.cron_expr)
-                self.next_run_time = cron_trigger.get_next_fire_time(None, datetime.now(timezone.utc))
-            except Exception as e:
-                print(f"{Fore.YELLOW}无法计算下一次执行时间: {e}{Style.RESET_ALL}")
-        
-        # 更新状态
         self.status = "等待下次执行"
-        print(f"{Fore.CYAN}任务完成，等待下次执行...{Style.RESET_ALL}")
+        self.logger(f"{Fore.CYAN}计划任务执行完毕。{Style.RESET_ALL}")
         if self.next_run_time:
-            print(f"{Fore.CYAN}下一次执行时间: {self.next_run_time.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
-    
-    def start(self):
-        """启动流量消耗器"""
-        # 如果设置了Cron表达式
-        if self.cron_expr:
-            self.setup_scheduler()
-            return
-            
-        # 如果设置了间隔时间
-        if self.interval:
-            self.setup_interval_scheduler()
-            return
-        
+            self.logger(f"{Fore.CYAN}下一次执行时间: {self.next_run_time.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
+
+    def _run_task(self):
+        """执行一次完整的下载任务"""
         self.active = True
         self.start_time = time.time()
         self.status = "正在执行"
         
-        # 创建并启动下载线程
         download_threads = []
         for i in range(self.threads):
             thread = threading.Thread(target=self.download_file, args=(i+1,))
@@ -785,88 +786,40 @@ class TrafficConsumer:
             thread.start()
             download_threads.append(thread)
         
-        # 创建并启动统计线程
-        stats_thread = threading.Thread(target=self.display_stats)
-        stats_thread.daemon = True
-        stats_thread.start()
+        stats_thread = None
+        # 仅在CLI模式下启动独立的统计显示线程
+        if self.logger == self._default_logger:
+            stats_thread = threading.Thread(target=self.display_stats)
+            stats_thread.daemon = True
+            stats_thread.start()
         
         try:
-            # 如果设置了持续时间
+            # 限制条件（如时长、流量、次数）将在download_file方法内部检查
+            # 并将self.active设置为False
             if self.duration:
                 time.sleep(self.duration)
                 self.active = False
             else:
-                # 无限运行，直到按Ctrl+C或达到下载次数
                 while self.active:
                     time.sleep(0.1)
         except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}接收到中断信号，正在停止...{Style.RESET_ALL}")
+            self.logger(f"\n{Fore.YELLOW}接收到中断信号，正在停止...{Style.RESET_ALL}")
             self.active = False
         
-        # 等待所有线程结束
         for thread in download_threads:
-            thread.join(1)
-        stats_thread.join(1)
+            thread.join(timeout=1.0)
+        if stats_thread:
+            stats_thread.join(timeout=1.0)
         
-        # 保存配置
-        self.save_config()
-        
-        print(f"{Fore.CYAN}流量消耗器已停止{Style.RESET_ALL}")
+        self.save_stats()
+        self.logger(f"{Fore.CYAN}任务已停止。{Style.RESET_ALL}")
 
-    def setup_interval_scheduler(self):
-        """设置基于间隔的调度器"""
-        if not self.interval:
-            return
-            
-        self.scheduler = BackgroundScheduler()
-        
-        # 添加任务，从当前时间开始，每隔interval分钟执行一次
-        job = self.scheduler.add_job(
-            self.scheduled_run,
-            'interval',
-            minutes=self.interval
-        )
-        
-        # 获取下一次执行时间 - 直接计算，不使用job.next_run_time
-        # 使用UTC时区保持一致
-        self.next_run_time = datetime.now(timezone.utc) + timedelta(minutes=self.interval)
-        
-        # 启动调度器
-        self.scheduler.start()
-        
-        print(f"{Fore.CYAN}已设置间隔调度: 每{self.interval}分钟执行一次{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}下一次执行时间: {self.next_run_time.strftime('%Y-%m-%d %H:%M:%S')}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}程序将实时显示状态，按Ctrl+C停止{Style.RESET_ALL}")
-        
-        # 设置信号处理
-        signal.signal(signal.SIGINT, self.handle_signal)
-        signal.signal(signal.SIGTERM, self.handle_signal)
-        
-        # 更新状态
-        self.status = "等待执行"
-        
-        # 保持主线程运行，同时实时显示状态
-        try:
-            while True:
-                # 计算剩余时间
-                remaining = self.next_run_time - datetime.now(self.next_run_time.tzinfo if hasattr(self.next_run_time, 'tzinfo') and self.next_run_time.tzinfo is not None else None)
-                if remaining.total_seconds() <= 0:
-                    # 如果到达执行时间，等待调度器触发任务
-                    time.sleep(1)
-                    continue
-                
-                # 格式化剩余时间
-                remaining_str = str(remaining).split('.')[0]  # 移除毫秒
-                
-                # 显示状态和倒计时
-                status_msg = f"{Fore.CYAN}状态: {self.status} | 距离下次执行还有: {remaining_str}{Style.RESET_ALL}"
-                sys.stdout.write(f"\r{status_msg}")
-                sys.stdout.flush()
-                
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print(f"\n{Fore.YELLOW}接收到中断信号，正在停止调度器...{Style.RESET_ALL}")
-            self.scheduler.shutdown()
+    def start(self):
+        """启动流量消耗器"""
+        if self.cron_expr or self.interval:
+            self.setup_scheduler()
+        else:
+            self._run_task()
 
 
 def parse_args():

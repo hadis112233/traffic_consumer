@@ -91,7 +91,33 @@
                         </div>
                         <button id="start-btn" class="btn btn-primary"><i class="bi bi-play-fill"></i> 启动</button>
                         <button id="stop-btn" class="btn btn-danger" disabled><i class="bi bi-stop-fill"></i> 停止</button>
+                        <button id="stop-scheduler-btn" class="btn btn-warning"><i class="bi bi-calendar-x"></i> 停止计划</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" id="scheduler-status-card">
+            <div class="card-header">
+                <i class="bi bi-clock-history"></i> 调度信息
+            </div>
+            <div class="card-body">
+                <p class="card-text">当前任务: <span id="job-details" class="fw-bold">无</span></p>
+                <p class="card-text">下次运行: <span id="next-run-time" class="fw-bold">无</span></p>
+                <p class="card-text">倒计时: <span id="countdown" class="fw-bold">无</span></p>
+                <h6 class="card-subtitle mb-2 text-muted mt-3">执行历史</h6>
+                <div style="height: 200px; overflow-y: auto;">
+                    <table class="table table-sm table-striped">
+                        <thead>
+                            <tr>
+                                <th scope="col">执行时间</th>
+                                <th scope="col">结果</th>
+                                <th scope="col">消耗流量</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-table-body">
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -178,6 +204,7 @@
 
             const startBtn = document.getElementById('start-btn');
             const stopBtn = document.getElementById('stop-btn');
+            const stopSchedulerBtn = document.getElementById('stop-scheduler-btn');
             const saveConfigBtn = document.getElementById('save-config-btn');
             const configSelect = document.getElementById('config-select');
             const runningStatus = document.getElementById('running-status');
@@ -212,9 +239,34 @@
             });
 
             socket.on('connect', () => {
-                console.log('Connected to server');
+                console.log('已连接到服务器');
                 // Do not add log here, let the toggle decide
                 socket.emit('get_configs');
+            });
+
+            socket.on('request_status_update', () => {
+                updateSchedulerStatus();
+            });
+
+            socket.on('history_update', (record) => {
+                const row = historyTableBody.insertRow(0); // 插入到最前面
+                const cell1 = row.insertCell(0);
+                const cell2 = row.insertCell(1);
+                const cell3 = row.insertCell(2);
+                cell1.textContent = new Date(record.timestamp).toLocaleString();
+                cell2.textContent = record.result;
+                cell3.textContent = record.bytes_consumed;
+
+                // 如果表格之前是“暂无历史记录”，则清除它
+                const noHistoryRow = historyTableBody.querySelector('.no-history');
+                if (noHistoryRow) {
+                    noHistoryRow.remove();
+                }
+
+                // 保持历史记录数量不超过UI限制
+                while (historyTableBody.rows.length > 50) {
+                    historyTableBody.deleteRow(historyTableBody.rows.length - 1);
+                }
             });
 
             socket.on('log_message', (data) => {
@@ -285,6 +337,96 @@
                 socket.emit('get_config_details', { name: selectedConfig });
             });
 
+            const jobDetailsEl = document.getElementById('job-details');
+            const nextRunTimeEl = document.getElementById('next-run-time');
+            const countdownEl = document.getElementById('countdown');
+            const historyTableBody = document.getElementById('history-table-body');
+            let countdownInterval;
+
+            function formatBytes(bytes) {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+
+            function updateSchedulerStatus() {
+                fetch('/api/scheduler_status')
+                    .then(response => response.json())
+                    .then(data => {
+                        // 更新当前任务详情
+                        if (data.job_details) {
+                            jobDetailsEl.textContent = data.job_details;
+                            stopSchedulerBtn.disabled = false;
+                        } else {
+                            jobDetailsEl.textContent = '无';
+                            stopSchedulerBtn.disabled = true;
+                        }
+
+                        // 更新下次运行时间
+                        if (data.next_run_time) {
+                            const nextRunDate = new Date(data.next_run_time);
+                            nextRunTimeEl.textContent = nextRunDate.toLocaleString();
+                            
+                            if (countdownInterval) clearInterval(countdownInterval);
+                            
+                            countdownInterval = setInterval(() => {
+                                const now = new Date();
+                                const diff = nextRunDate - now;
+
+                                if (diff <= 0) {
+                                    countdownEl.textContent = '运行中...';
+                                    clearInterval(countdownInterval);
+                                    // 稍后刷新以获取新的下次运行时间
+                                    setTimeout(updateSchedulerStatus, 2000);
+                                    return;
+                                }
+
+                                const hours = Math.floor(diff / (1000 * 60 * 60));
+                                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                                const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+                                countdownEl.textContent = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+                            }, 1000);
+
+                        } else {
+                            nextRunTimeEl.textContent = '无';
+                            countdownEl.textContent = '无';
+                            if (countdownInterval) clearInterval(countdownInterval);
+                        }
+
+                        // 更新历史记录
+                        historyTableBody.innerHTML = '';
+                        if (data.history && data.history.length > 0) {
+                            data.history.forEach(item => {
+                                const row = historyTableBody.insertRow();
+                                const cell1 = row.insertCell(0);
+                                const cell2 = row.insertCell(1);
+                                const cell3 = row.insertCell(2);
+                                cell1.textContent = new Date(item.timestamp).toLocaleString();
+                                cell2.textContent = item.result;
+                                cell3.textContent = item.bytes_consumed;
+                            });
+                        } else {
+                            const row = historyTableBody.insertRow();
+                            row.classList.add('no-history');
+                            const cell = row.insertCell(0);
+                            cell.colSpan = 3;
+                            cell.textContent = '暂无历史记录';
+                            cell.classList.add('text-center');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('获取调度器状态时出错:', error);
+                        nextRunTimeEl.textContent = '加载失败';
+                        countdownEl.textContent = '加载失败';
+                    });
+            }
+            
+            // 初始加载并设置定时刷新
+            updateSchedulerStatus();
+            setInterval(updateSchedulerStatus, 30000); // 每30秒与服务器同步一次
+
             function getNumberValue(inputElement) {
                 const value = inputElement.value;
                 if (value === '' || value === null) {
@@ -314,6 +456,7 @@
                     addLog('正在启动流量消耗器...');
                 }
                 socket.emit('start_consumer', getConfigFromForm());
+                setTimeout(updateSchedulerStatus, 500); // 立即刷新调度信息
             });
 
             stopBtn.addEventListener('click', () => {
@@ -321,6 +464,14 @@
                     addLog('正在停止流量消耗器...');
                 }
                 socket.emit('stop_consumer');
+                setTimeout(updateSchedulerStatus, 500); // 立即刷新调度信息
+            });
+
+            stopSchedulerBtn.addEventListener('click', () => {
+                if (logCollapse.classList.contains('show')) {
+                    addLog('正在停止调度器...');
+                }
+                socket.emit('stop_scheduler');
             });
 
             saveConfigBtn.addEventListener('click', () => {
@@ -329,6 +480,7 @@
                     addLog(`正在保存配置: ${config.config_name}`);
                 }
                 socket.emit('save_config', { name: config.config_name, data: config });
+                setTimeout(updateSchedulerStatus, 500); // 立即刷新调度信息
             });
         });
     </script>

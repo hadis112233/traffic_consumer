@@ -3,7 +3,7 @@
 
 import threading
 import time
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from traffic_consumer import TrafficConsumer
 
@@ -43,6 +43,30 @@ def index():
     """渲染主页面"""
     return render_template('index.html')
 
+@app.route('/api/scheduler_status')
+def scheduler_status():
+    """获取调度器状态"""
+    if consumer_instance:
+        next_run_time = None
+        job_details = None
+        if consumer_instance.scheduler and consumer_instance.scheduler.running:
+            job = consumer_instance.scheduler.get_job('traffic_consumer_job')
+            if job:
+                next_run_time = job.next_run_time.isoformat() if job.next_run_time else None
+                # 增强：获取任务详情
+                if consumer_instance.cron_expr:
+                    job_details = f"Cron: {consumer_instance.cron_expr}"
+                elif consumer_instance.interval:
+                    job_details = f"Interval: {consumer_instance.interval} minutes"
+
+        status = {
+            'next_run_time': next_run_time,
+            'job_details': job_details,
+            'history': consumer_instance.history
+        }
+        return jsonify(status)
+    return jsonify({'next_run_time': None, 'job_details': None, 'history': []})
+
 @socketio.on('connect')
 def handle_connect():
     """处理客户端连接"""
@@ -70,6 +94,9 @@ def handle_start(data):
         if log_enabled:
             socketio.emit('log_message', {'message': message})
 
+    def history_emitter(record):
+        socketio.emit('history_update', record)
+
     consumer_instance = TrafficConsumer(
         urls=data.get('urls'),
         url_strategy=data.get('url_strategy'),
@@ -81,7 +108,8 @@ def handle_start(data):
         cron_expr=data.get('cron_expr'),
         interval=data.get('interval'),
         config_name=data.get('config_name'),
-        logger=log_emitter
+        logger=log_emitter,
+        history_callback=history_emitter
     )
     
     consumer_thread = threading.Thread(target=consumer_instance.start)
@@ -101,6 +129,22 @@ def handle_stop():
         emit('status_update', {'running': False, 'message': '流量消耗器已停止。'})
     else:
         emit('error', {'message': '流量消耗器未在运行。'})
+
+@socketio.on('stop_scheduler')
+def handle_stop_scheduler():
+    """停止调度器"""
+    global consumer_instance
+    if consumer_instance and consumer_instance.scheduler and consumer_instance.scheduler.running:
+        consumer_instance.scheduler.shutdown()
+        consumer_instance.scheduler = None
+        # 重置cron和interval，以防实例被复用
+        consumer_instance.cron_expr = None
+        consumer_instance.interval = None
+        emit('status_update', {'message': '调度器已停止。'})
+        # 立即请求前端更新状态
+        socketio.emit('request_status_update')
+    else:
+        emit('error', {'message': '调度器未在运行。'})
 
 @socketio.on('get_configs')
 def handle_get_configs():
