@@ -759,7 +759,7 @@ class TrafficConsumer:
             self._run_task()
             end_bytes = self.total_bytes
             # 记录任务完成
-            self.add_history_record("completed_scheduled", end_bytes - start_bytes)
+            self.add_history_record("成功", end_bytes - start_bytes)
         except Exception as e:
             self.logger(f"{Fore.RED}计划任务执行失败: {e}{Style.RESET_ALL}", Fore.RED)
             self.add_history_record("failed", 0) # 记录失败
