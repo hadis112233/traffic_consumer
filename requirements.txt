@@ -7,3 +7,4 @@ apscheduler==3.10.1
 Flask==2.2.2
 Flask-SocketIO==5.3.3
 Werkzeug==2.2.2
+croniter

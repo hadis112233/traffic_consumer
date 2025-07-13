@@ -3,8 +3,10 @@
 
 import threading
 import time
+import datetime
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
+from croniter import croniter
 from traffic_consumer import TrafficConsumer
 
 # 初始化 Flask 和 SocketIO
@@ -42,6 +44,21 @@ def status_emitter():
 def index():
     """渲染主页面"""
     return render_template('index.html')
+
+@app.route('/api/preview_cron', methods=['POST'])
+def preview_cron():
+    """预览Cron表达式的下5次运行时间"""
+    cron_expr = request.json.get('cron_expr')
+    if not cron_expr or not croniter.is_valid(cron_expr):
+        return jsonify({'error': '无效的Cron表达式'}), 400
+    
+    now = datetime.datetime.now()
+    try:
+        itr = croniter(cron_expr, now)
+        next_runs = [itr.get_next(datetime.datetime).isoformat() for _ in range(5)]
+        return jsonify(next_runs)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
 @app.route('/api/scheduler_status')
 def scheduler_status():
