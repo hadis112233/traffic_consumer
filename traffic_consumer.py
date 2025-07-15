@@ -410,7 +410,8 @@ class TrafficConsumer:
         record = {
             "timestamp": datetime.now().isoformat(),
             "result": result,
-            "bytes_consumed": self.format_bytes(bytes_consumed)
+            "bytes_consumed": self.format_bytes(bytes_consumed),
+            "download_count": self.download_count
         }
         self.history.insert(0, record) # 插入到开头
         # 限制历史记录的大小

@@ -40,6 +40,31 @@ def status_emitter():
             socketio.emit('status_update', {'running': False, 'thread_status': {}})
         socketio.sleep(1)
 
+def scheduler_status_emitter():
+    """定期向前端发送调度器状态更新"""
+    while not status_thread_stop.is_set():
+        if consumer_instance:
+            next_run_time = None
+            job_details = None
+            if consumer_instance.scheduler and consumer_instance.scheduler.running:
+                job = consumer_instance.scheduler.get_job('traffic_consumer_job')
+                if job:
+                    next_run_time = job.next_run_time.isoformat() if job.next_run_time else None
+                    if consumer_instance.cron_expr:
+                        job_details = f"Cron: {consumer_instance.cron_expr}"
+                    elif consumer_instance.interval:
+                        job_details = f"Interval: {consumer_instance.interval} minutes"
+            
+            status = {
+                'next_run_time': next_run_time,
+                'job_details': job_details,
+                'history': consumer_instance.history
+            }
+            socketio.emit('scheduler_status_update', status)
+        else:
+            socketio.emit('scheduler_status_update', {'next_run_time': None, 'job_details': None, 'history': []})
+        socketio.sleep(2) # 调度器状态不需要太频繁更新
+
 @app.route('/')
 def index():
     """渲染主页面"""
@@ -60,29 +85,6 @@ def preview_cron():
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
-@app.route('/api/scheduler_status')
-def scheduler_status():
-    """获取调度器状态"""
-    if consumer_instance:
-        next_run_time = None
-        job_details = None
-        if consumer_instance.scheduler and consumer_instance.scheduler.running:
-            job = consumer_instance.scheduler.get_job('traffic_consumer_job')
-            if job:
-                next_run_time = job.next_run_time.isoformat() if job.next_run_time else None
-                # 增强：获取任务详情
-                if consumer_instance.cron_expr:
-                    job_details = f"Cron: {consumer_instance.cron_expr}"
-                elif consumer_instance.interval:
-                    job_details = f"Interval: {consumer_instance.interval} minutes"
-
-        status = {
-            'next_run_time': next_run_time,
-            'job_details': job_details,
-            'history': consumer_instance.history
-        }
-        return jsonify(status)
-    return jsonify({'next_run_time': None, 'job_details': None, 'history': []})
 
 @socketio.on('connect')
 def handle_connect():
@@ -91,6 +93,8 @@ def handle_connect():
     if status_thread is None or not status_thread.is_alive():
         status_thread_stop.clear()
         status_thread = socketio.start_background_task(target=status_emitter)
+        # 启动调度器状态发送任务
+        socketio.start_background_task(target=scheduler_status_emitter)
     emit('status_update', {'running': consumer_instance.active if consumer_instance else False, 'thread_status': {}})
 
 @socketio.on('toggle_logs')

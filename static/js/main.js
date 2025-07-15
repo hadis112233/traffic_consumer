@@ -60,8 +60,8 @@ document.addEventListener('DOMContentLoaded', (event) => {
             datasets: [{
                 label: '速度 (MB/s)',
                 data: [],
-                borderColor: 'rgba(233, 30, 99, 0.8)',
-                backgroundColor: 'rgba(233, 30, 99, 0.2)',
+                borderColor: 'rgba(255, 105, 180, 0.8)',
+                backgroundColor: 'rgba(255, 105, 180, 0.2)',
                 fill: true,
                 tension: 0.4
             }]
@@ -71,9 +71,9 @@ document.addEventListener('DOMContentLoaded', (event) => {
             maintainAspectRatio: false,
             scales: {
                 x: { display: false },
-                y: { 
+                y: {
                     beginAtZero: true,
-                    ticks: { color: '#6d4c41' }
+                    ticks: { color: '#FF69B4' }
                 }
             },
             plugins: {
@@ -81,6 +81,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
             }
         }
     });
+
 
     function addDataToChart(label, data) {
         speedChart.data.labels.push(label);
@@ -148,7 +149,7 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     socket.on('history_update', (record) => {
         const row = historyTableBody.insertRow(0);
-        row.innerHTML = `<td>${new Date(record.timestamp).toLocaleString()}</td><td>${record.result}</td><td>${record.bytes_consumed}</td>`;
+        row.innerHTML = `<td>${new Date(record.timestamp).toLocaleString()}</td><td>${record.result}</td><td>${record.bytes_consumed}</td><td>${record.download_count || 'N/A'}</td>`;
         const noHistoryRow = historyTableBody.querySelector('.no-history');
         if (noHistoryRow) noHistoryRow.remove();
         while (historyTableBody.rows.length > 50) {
@@ -176,52 +177,43 @@ document.addEventListener('DOMContentLoaded', (event) => {
         }
     });
 
-    socket.on('request_status_update', updateSchedulerStatus);
-
-    // --- 调度器状态更新 ---
     let countdownInterval;
-    function updateSchedulerStatus() {
-        fetch('/api/scheduler_status')
-            .then(response => response.json())
-            .then(data => {
-                jobDetailsEl.textContent = data.job_details || '无';
-                stopSchedulerBtn.disabled = !data.job_details;
+    socket.on('scheduler_status_update', (data) => {
+        jobDetailsEl.textContent = data.job_details || '无';
+        stopSchedulerBtn.disabled = !data.job_details;
 
-                if (data.next_run_time) {
-                    const nextRunDate = new Date(data.next_run_time);
-                    nextRunTimeEl.textContent = nextRunDate.toLocaleString();
-                    if (countdownInterval) clearInterval(countdownInterval);
-                    countdownInterval = setInterval(() => {
-                        const diff = nextRunDate - new Date();
-                        if (diff <= 0) {
-                            countdownEl.textContent = '运行中...';
-                            clearInterval(countdownInterval);
-                            setTimeout(updateSchedulerStatus, 2000);
-                            return;
-                        }
-                        const h = Math.floor(diff / 3600000).toString().padStart(2, '0');
-                        const m = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
-                        const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
-                        countdownEl.textContent = `${h}:${m}:${s}`;
-                    }, 1000);
-                } else {
-                    nextRunTimeEl.textContent = '无';
-                    countdownEl.textContent = '无';
-                    if (countdownInterval) clearInterval(countdownInterval);
+        if (data.next_run_time) {
+            const nextRunDate = new Date(data.next_run_time);
+            nextRunTimeEl.textContent = nextRunDate.toLocaleString();
+            if (countdownInterval) clearInterval(countdownInterval);
+            countdownInterval = setInterval(() => {
+                const diff = nextRunDate - new Date();
+                if (diff <= 0) {
+                    countdownEl.textContent = '运行中...';
+                    clearInterval(countdownInterval);
+                    return;
                 }
+                const h = Math.floor(diff / 3600000).toString().padStart(2, '0');
+                const m = Math.floor((diff % 3600000) / 60000).toString().padStart(2, '0');
+                const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
+                countdownEl.textContent = `${h}:${m}:${s}`;
+            }, 1000);
+        } else {
+            nextRunTimeEl.textContent = '无';
+            countdownEl.textContent = '无';
+            if (countdownInterval) clearInterval(countdownInterval);
+        }
 
-                historyTableBody.innerHTML = '';
-                if (data.history && data.history.length > 0) {
-                    data.history.forEach(item => {
-                        const row = historyTableBody.insertRow();
-                        row.innerHTML = `<td>${new Date(item.timestamp).toLocaleString()}</td><td>${item.result}</td><td>${item.bytes_consumed}</td>`;
-                    });
-                } else {
-                    historyTableBody.innerHTML = '<tr class="no-history text-center"><td colspan="3">暂无历史记录</td></tr>';
-                }
-            })
-            .catch(error => console.error('获取调度器状态时出错:', error));
-    }
+        historyTableBody.innerHTML = '';
+        if (data.history && data.history.length > 0) {
+            data.history.forEach(item => {
+                const row = historyTableBody.insertRow();
+                row.innerHTML = `<td>${new Date(item.timestamp).toLocaleString()}</td><td>${item.result}</td><td>${item.bytes_consumed}</td><td>${item.download_count || 'N/A'}</td>`;
+            });
+        } else {
+            historyTableBody.innerHTML = '<tr class="no-history text-center"><td colspan="4">暂无历史记录</td></tr>';
+        }
+    });
     
     // --- 事件监听 ---
     function getConfigFromForm() {
@@ -238,12 +230,10 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     startBtn.addEventListener('click', () => {
         socket.emit('start_consumer', getConfigFromForm());
-        setTimeout(updateSchedulerStatus, 500);
     });
 
     stopBtn.addEventListener('click', () => {
         socket.emit('stop_consumer');
-        setTimeout(updateSchedulerStatus, 500);
     });
 
     stopSchedulerBtn.addEventListener('click', () => socket.emit('stop_scheduler'));
@@ -315,6 +305,4 @@ document.addEventListener('DOMContentLoaded', (event) => {
     });
 
     // --- 初始加载 ---
-    updateSchedulerStatus();
-    setInterval(updateSchedulerStatus, 30000);
 });
