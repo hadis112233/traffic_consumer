@@ -27,17 +27,44 @@ def status_emitter():
         if consumer_instance and consumer_instance.active:
             with consumer_instance.lock:
                 thread_urls = consumer_instance.thread_current_urls.copy()
+                url_usage_snapshot = consumer_instance.url_usage.copy()
+                total_usage = sum(url_usage_snapshot.values())
+                url_usage_stats = []
+                if consumer_instance.urls:
+                    for url in consumer_instance.urls:
+                        count = url_usage_snapshot.get(url, 0)
+                        percentage = round((count / total_usage) * 100, 1) if total_usage else 0.0
+                        url_usage_stats.append({
+                            'url': url,
+                            'count': count,
+                            'percentage': percentage
+                        })
+                else:
+                    for url, count in url_usage_snapshot.items():
+                        percentage = round((count / total_usage) * 100, 1) if total_usage else 0.0
+                        url_usage_stats.append({
+                            'url': url,
+                            'count': count,
+                            'percentage': percentage
+                        })
             status = {
                 'total_bytes': consumer_instance.format_bytes(consumer_instance.total_bytes),
                 'speed': consumer_instance.format_bytes(consumer_instance.total_bytes / (time.time() - consumer_instance.start_time) if (time.time() - consumer_instance.start_time) > 0 else 0) + '/s',
                 'download_count': consumer_instance.download_count,
                 'running': True,
                 'config': consumer_instance.config_name,
-                'thread_status': thread_urls
+                'thread_count': consumer_instance.threads,
+                'thread_status': thread_urls,
+                'url_usage_stats': url_usage_stats
             }
             socketio.emit('status_update', status)
         else:
-            socketio.emit('status_update', {'running': False, 'thread_status': {}})
+            socketio.emit('status_update', {
+                'running': False,
+                'thread_status': {},
+                'thread_count': consumer_instance.threads if consumer_instance else 0,
+                'url_usage_stats': []
+            })
         socketio.sleep(1)
 
 def scheduler_status_emitter():
@@ -95,7 +122,12 @@ def handle_connect():
         status_thread = socketio.start_background_task(target=status_emitter)
         # 启动调度器状态发送任务
         socketio.start_background_task(target=scheduler_status_emitter)
-    emit('status_update', {'running': consumer_instance.active if consumer_instance else False, 'thread_status': {}})
+    emit('status_update', {
+        'running': consumer_instance.active if consumer_instance else False,
+        'thread_status': {},
+        'thread_count': consumer_instance.threads if consumer_instance else 0,
+        'url_usage_stats': []
+    })
 
 @socketio.on('toggle_logs')
 def handle_toggle_logs(data):
@@ -118,6 +150,9 @@ def handle_start(data):
     def history_emitter(record):
         socketio.emit('history_update', record)
 
+    def invalid_url_emitter(payload):
+        socketio.emit('invalid_url', payload)
+
     consumer_instance = TrafficConsumer(
         urls=data.get('urls'),
         url_strategy=data.get('url_strategy'),
@@ -130,7 +165,8 @@ def handle_start(data):
         interval=data.get('interval'),
         config_name=data.get('config_name'),
         logger=log_emitter,
-        history_callback=history_emitter
+        history_callback=history_emitter,
+        invalid_url_callback=invalid_url_emitter
     )
     
     consumer_thread = threading.Thread(target=consumer_instance.start)
@@ -180,9 +216,10 @@ def handle_get_configs():
 def handle_get_config_details(data):
     """获取配置详情"""
     config_name = data.get('name')
+    target = data.get('target')
     config = TrafficConsumer.load_config(config_name)
     if config:
-        emit('config_details', {'name': config_name, 'config': config})
+        emit('config_details', {'name': config_name, 'config': config, 'target': target})
 
 @socketio.on('save_config')
 def handle_save_config(data):

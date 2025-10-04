@@ -19,7 +19,8 @@ document.addEventListener('DOMContentLoaded', (event) => {
         duration: document.getElementById('duration'),
         count: document.getElementById('count'),
         cron_expr: document.getElementById('cron-expr'),
-        interval: document.getElementById('interval')
+        interval: document.getElementById('interval'),
+        url_strategy: document.getElementById('url-strategy')
     };
     const jobDetailsEl = document.getElementById('job-details');
     const nextRunTimeEl = document.getElementById('next-run-time');
@@ -29,6 +30,22 @@ document.addEventListener('DOMContentLoaded', (event) => {
     const logSwitch = document.getElementById('log-switch');
     const logContainer = document.getElementById('log-container');
     const clearLogBtn = document.getElementById('clear-log-btn');
+    const editorConfigSelect = document.getElementById('config-editor-select');
+    const resetConfigBtn = document.getElementById('reset-config-btn');
+    const threadStatusList = document.getElementById('thread-status-list');
+    const urlUsageList = document.getElementById('url-usage-list');
+    const notificationArea = document.getElementById('notification-area');
+    const activeThreadCountEl = document.getElementById('active-thread-count');
+    const idleThreadCountEl = document.getElementById('idle-thread-count');
+    const totalThreadCountEl = document.getElementById('total-thread-count');
+    const erroredThreadCountEl = document.getElementById('errored-thread-count');
+    const currentConfigEl = document.getElementById('current-config');
+
+    let selectedConfigName = null;
+    let selectedConfigDetail = null;
+    let editorActiveConfig = null;
+    let pendingConfigTarget = null;
+    let pendingConfigName = null;
 
     function ansiToHtml(text) {
         const ansiToCss = {
@@ -82,6 +99,86 @@ document.addEventListener('DOMContentLoaded', (event) => {
         }
     });
 
+    const urlPieChartCanvas = document.getElementById('url-pie-chart');
+    const urlPieChart = urlPieChartCanvas ? new Chart(urlPieChartCanvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            labels: ['无数据'],
+            datasets: [{
+                data: [1],
+                backgroundColor: ['rgba(255, 228, 240, 0.9)'],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '58%',
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: {
+                        boxWidth: 14,
+                        boxHeight: 14,
+                        padding: 12,
+                        color: '#666'
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label(context) {
+                            const label = context.label || '';
+                            const value = context.parsed;
+                            return `${label}: ${value} 次`;
+                        }
+                    }
+                }
+            }
+        }
+    }) : null;
+
+    const threadUsageChartCanvas = document.getElementById('thread-usage-chart');
+    const threadUsageChart = threadUsageChartCanvas ? new Chart(threadUsageChartCanvas.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            labels: ['活跃', '空闲', '失效'],
+            datasets: [{
+                data: [0, 0, 0],
+                backgroundColor: [
+                    'rgba(255, 105, 180, 0.85)',
+                    'rgba(255, 182, 193, 0.85)',
+                    'rgba(220, 53, 69, 0.75)'
+                ],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '65%',
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: {
+                        boxWidth: 12,
+                        boxHeight: 12,
+                        padding: 10,
+                        color: '#666'
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label(context) {
+                            const label = context.label || '';
+                            const value = context.parsed;
+                            return `${label}: ${value} 条线程`;
+                        }
+                    }
+                }
+            }
+        }
+    }) : null;
+
 
     function addDataToChart(label, data) {
         speedChart.data.labels.push(label);
@@ -95,6 +192,384 @@ document.addEventListener('DOMContentLoaded', (event) => {
         speedChart.update('none'); // 'none' for no animation
     }
 
+    function updateUrlPieChart(stats = []) {
+        if (!urlPieChart) return;
+
+        if (!Array.isArray(stats) || stats.length === 0) {
+            urlPieChart.data.labels = ['无数据'];
+            urlPieChart.data.datasets[0].data = [1];
+            urlPieChart.data.datasets[0].backgroundColor = ['rgba(255, 228, 240, 0.9)'];
+            urlPieChart.update('none');
+            return;
+        }
+
+        const palette = [
+            'rgba(255, 105, 180, 0.85)',
+            'rgba(255, 182, 193, 0.85)',
+            'rgba(255, 160, 176, 0.85)',
+            'rgba(255, 215, 230, 0.85)',
+            'rgba(255, 240, 245, 0.9)',
+            'rgba(255, 200, 210, 0.85)'
+        ];
+
+        const labels = [];
+        const values = [];
+        const colors = [];
+
+        stats.forEach((item, index) => {
+            const label = item.url || `链接 ${index + 1}`;
+            const value = Number(item.count) || 0;
+            labels.push(label);
+            values.push(value);
+            colors.push(palette[index % palette.length]);
+        });
+
+        urlPieChart.data.labels = labels;
+        urlPieChart.data.datasets[0].data = values;
+        urlPieChart.data.datasets[0].backgroundColor = colors;
+        urlPieChart.update('none');
+    }
+
+    function updateThreadUsageChart(active = 0, idle = 0, errored = 0) {
+        if (!threadUsageChart) return;
+        threadUsageChart.data.datasets[0].data = [active, idle, errored];
+        threadUsageChart.update('none');
+    }
+
+    function resetConfigForm(keepSelection = false) {
+        Object.keys(configInputs).forEach((key) => {
+            const element = configInputs[key];
+            if (!element) return;
+            if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
+                element.value = '';
+            } else {
+                element.value = '';
+            }
+        });
+        if (!keepSelection && editorConfigSelect) {
+            editorConfigSelect.value = '';
+        }
+        if (cronPreviewEl) {
+            cronPreviewEl.innerHTML = '';
+        }
+        editorActiveConfig = null;
+        if (configInputs.cron_expr) {
+            configInputs.cron_expr.dispatchEvent(new Event('input'));
+        }
+    }
+
+    function populateEditorForm(name, config = {}) {
+        if (configInputs.name) {
+            configInputs.name.value = name || '';
+        }
+        if (configInputs.urls) {
+            const urls = Array.isArray(config.urls) ? config.urls : [];
+            configInputs.urls.value = urls.join('\n');
+        }
+        if (configInputs.threads) {
+            configInputs.threads.value = config.threads ?? '';
+        }
+        if (configInputs.limit_speed) {
+            configInputs.limit_speed.value = config.limit_speed ?? '';
+        }
+        if (configInputs.traffic_limit) {
+            configInputs.traffic_limit.value = config.traffic_limit ?? '';
+        }
+        if (configInputs.duration) {
+            configInputs.duration.value = config.duration ?? '';
+        }
+        if (configInputs.count) {
+            configInputs.count.value = config.count ?? '';
+        }
+        if (configInputs.cron_expr) {
+            configInputs.cron_expr.value = config.cron_expr ?? '';
+        }
+        if (configInputs.interval) {
+            configInputs.interval.value = config.interval ?? '';
+        }
+        if (configInputs.url_strategy) {
+            configInputs.url_strategy.value = config.url_strategy ?? '';
+        }
+        editorActiveConfig = name || null;
+        if (cronPreviewEl) {
+            cronPreviewEl.innerHTML = '';
+        }
+        if (configInputs.cron_expr) {
+            configInputs.cron_expr.dispatchEvent(new Event('input'));
+        }
+    }
+
+    function normalizeConfigPayload(config = {}, name = null) {
+        const payload = {
+            urls: Array.isArray(config.urls) ? [...config.urls] : [],
+            url_strategy: config.url_strategy ?? null,
+            threads: config.threads ?? null,
+            limit_speed: config.limit_speed ?? null,
+            traffic_limit: config.traffic_limit ?? null,
+            duration: config.duration ?? null,
+            count: config.count ?? null,
+            cron_expr: config.cron_expr ?? null,
+            interval: config.interval ?? null,
+            config_name: name || config.config_name || null
+        };
+
+        payload.name = name || config.name || '';
+
+        payload.urls = payload.urls
+            .map((url) => {
+                if (typeof url === 'string') {
+                    return url.trim();
+                }
+                return url != null ? String(url).trim() : '';
+            })
+            .filter((url) => url !== '');
+
+        const integerKeys = ['threads', 'traffic_limit', 'duration', 'count', 'interval'];
+        integerKeys.forEach((key) => {
+            if (payload[key] === null || payload[key] === undefined || payload[key] === '') {
+                payload[key] = null;
+                return;
+            }
+            const parsed = parseInt(payload[key], 10);
+            payload[key] = Number.isFinite(parsed) ? parsed : null;
+        });
+
+        if (payload.limit_speed !== null && payload.limit_speed !== undefined && payload.limit_speed !== '') {
+            const parsed = parseFloat(payload.limit_speed);
+            payload.limit_speed = Number.isFinite(parsed) ? parsed : null;
+        } else {
+            payload.limit_speed = null;
+        }
+
+        if (!payload.url_strategy) {
+            payload.url_strategy = null;
+        }
+
+        return payload;
+    }
+
+    function requestConfigDetails(name, target) {
+        if (!name) {
+            if (target === 'runtime') {
+                selectedConfigName = null;
+                selectedConfigDetail = null;
+                if (currentConfigEl) {
+                    currentConfigEl.textContent = '未选择';
+                    currentConfigEl.title = '未选择';
+                }
+            }
+            if (target === 'editor') {
+                resetConfigForm(true);
+            }
+            return;
+        }
+        if (target === 'runtime') {
+            selectedConfigName = name;
+            if (currentConfigEl) {
+                const displayName = name || '未命名配置';
+                currentConfigEl.textContent = displayName;
+                currentConfigEl.title = displayName;
+            }
+        }
+        if (target === 'editor') {
+            editorActiveConfig = name;
+        }
+        pendingConfigTarget = target;
+        pendingConfigName = name;
+        socket.emit('get_config_details', { name, target });
+    }
+
+    function renderThreadStatus(threadMap = {}, totalThreads = 0) {
+        if (!threadStatusList) return;
+
+        const entries = Object.entries(threadMap || {});
+        const expectedThreads = Number(totalThreads) || entries.length;
+
+        threadStatusList.innerHTML = '';
+
+        if (!expectedThreads) {
+            threadStatusList.innerHTML = '<tr class="placeholder-row"><td colspan="3" class="text-center text-muted py-3">暂无线程数据。</td></tr>';
+            if (totalThreadCountEl) totalThreadCountEl.textContent = '0';
+            if (activeThreadCountEl) activeThreadCountEl.textContent = '0';
+            if (idleThreadCountEl) idleThreadCountEl.textContent = '0';
+            if (erroredThreadCountEl) erroredThreadCountEl.textContent = '0';
+            updateThreadUsageChart(0, 0, 0);
+            return;
+        }
+
+        const mapped = new Map(entries.map(([key, value]) => [Number(key), value]));
+        let activeCount = 0;
+        let idleCount = 0;
+        let errorCount = 0;
+
+        for (let i = 1; i <= expectedThreads; i += 1) {
+            const rawValue = mapped.has(i) ? mapped.get(i) : null;
+            let displayUrl = rawValue;
+            if (displayUrl === null || displayUrl === undefined) {
+                displayUrl = '';
+            } else if (typeof displayUrl !== 'string') {
+                displayUrl = String(displayUrl);
+            }
+            let status = 'idle';
+
+            if (!displayUrl || displayUrl.trim() === '' || displayUrl.trim() === '等待分配...') {
+                displayUrl = '等待分配...';
+                status = 'idle';
+            } else if (displayUrl.includes('已失效') || displayUrl.includes('无可用')) {
+                status = 'error';
+            } else {
+                status = 'active';
+            }
+
+            const row = document.createElement('tr');
+
+            const threadCell = document.createElement('td');
+            threadCell.className = 'text-muted';
+            threadCell.textContent = `线程 ${i}`;
+            row.appendChild(threadCell);
+
+            const urlCell = document.createElement('td');
+            const urlSpan = document.createElement('span');
+            urlSpan.className = 'thread-url text-truncate';
+            const tooltipText = status === 'idle' ? '' : displayUrl;
+            urlSpan.textContent = displayUrl || '等待分配...';
+            if (tooltipText) {
+                urlSpan.title = tooltipText;
+            } else {
+                urlSpan.removeAttribute('title');
+            }
+            if (status === 'error') {
+                urlSpan.classList.add('text-danger');
+            }
+            urlCell.appendChild(urlSpan);
+            row.appendChild(urlCell);
+
+            const statusCell = document.createElement('td');
+            statusCell.className = 'text-end';
+            const badge = document.createElement('span');
+            badge.className = 'badge thread-status-badge';
+
+            if (status === 'active') {
+                badge.classList.add('bg-success');
+                badge.textContent = '运行中';
+                activeCount += 1;
+            } else if (status === 'error') {
+                badge.classList.add('bg-danger');
+                badge.textContent = displayUrl.includes('无可用') ? '耗尽' : '失效';
+                errorCount += 1;
+            } else {
+                badge.classList.add('bg-secondary');
+                badge.textContent = '待命';
+                idleCount += 1;
+            }
+
+            statusCell.appendChild(badge);
+            row.appendChild(statusCell);
+
+            threadStatusList.appendChild(row);
+        }
+
+        if (totalThreadCountEl) totalThreadCountEl.textContent = expectedThreads.toString();
+        if (activeThreadCountEl) activeThreadCountEl.textContent = activeCount.toString();
+        if (idleThreadCountEl) idleThreadCountEl.textContent = idleCount.toString();
+        if (erroredThreadCountEl) erroredThreadCountEl.textContent = errorCount.toString();
+
+        updateThreadUsageChart(activeCount, idleCount, errorCount);
+    }
+
+    function renderUrlUsage(stats = []) {
+        if (!urlUsageList) return;
+        urlUsageList.innerHTML = '';
+
+        if (!Array.isArray(stats) || stats.length === 0) {
+            urlUsageList.innerHTML = '<p class="text-muted text-center mb-0">暂无下载数据。</p>';
+            updateUrlPieChart([]);
+            return;
+        }
+
+        stats.forEach((item) => {
+            const percent = Number(item.percentage ?? 0);
+            const safePercent = Number.isFinite(percent) ? percent : 0;
+            const safeCount = Number.isFinite(Number(item.count)) ? Number(item.count) : 0;
+            const safeUrl = item.url || '未知链接';
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'url-usage-entry mb-2';
+
+            const header = document.createElement('div');
+            header.className = 'd-flex align-items-center gap-2 small mb-1 overflow-hidden';
+            const urlLabel = document.createElement('span');
+            urlLabel.className = 'usage-url flex-grow-1 text-truncate';
+            urlLabel.textContent = safeUrl;
+            urlLabel.title = safeUrl;
+
+            const statLabel = document.createElement('span');
+            statLabel.className = 'fw-bold text-nowrap';
+            statLabel.textContent = `${safePercent.toFixed(1)}% · ${safeCount} 次`;
+
+            header.appendChild(urlLabel);
+            header.appendChild(statLabel);
+
+            const progressOuter = document.createElement('div');
+            progressOuter.className = 'progress progress-sm';
+
+            const progressBar = document.createElement('div');
+            progressBar.className = 'progress-bar';
+            const width = Math.max(0, Math.min(100, safePercent));
+            progressBar.style.width = `${width}%`;
+            progressBar.setAttribute('aria-valuenow', width.toString());
+            progressBar.setAttribute('aria-valuemin', '0');
+            progressBar.setAttribute('aria-valuemax', '100');
+
+            progressOuter.appendChild(progressBar);
+            wrapper.appendChild(header);
+            wrapper.appendChild(progressOuter);
+
+            urlUsageList.appendChild(wrapper);
+        });
+
+        updateUrlPieChart(stats);
+    }
+
+    function pushAlert(data = {}) {
+        if (!notificationArea) return;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'alert alert-danger alert-dismissible fade show';
+        wrapper.setAttribute('role', 'alert');
+
+        const title = document.createElement('strong');
+        title.textContent = '下载失败：';
+
+        const message = document.createElement('span');
+        const baseMessage = data.message || (data.url ? `链接 ${data.url} 已连续失败，已停止重试。` : '存在下载链接失效，已停止重试。');
+        message.textContent = ` ${baseMessage}`;
+
+        const detail = document.createElement('div');
+        if (data.error) {
+            detail.className = 'small text-muted mt-1';
+            detail.textContent = `详情：${data.error}`;
+        }
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'btn-close';
+        closeBtn.setAttribute('data-bs-dismiss', 'alert');
+        closeBtn.setAttribute('aria-label', '关闭');
+
+        wrapper.appendChild(title);
+        wrapper.appendChild(message);
+        if (data.error) {
+            wrapper.appendChild(detail);
+        }
+        wrapper.appendChild(closeBtn);
+
+        notificationArea.appendChild(wrapper);
+
+        while (notificationArea.children.length > 3) {
+            notificationArea.removeChild(notificationArea.firstChild);
+        }
+    }
+
     // --- Socket.IO 事件处理 ---
     socket.on('connect', () => {
         console.log('已连接到服务器');
@@ -102,28 +577,83 @@ document.addEventListener('DOMContentLoaded', (event) => {
     });
 
     socket.on('configs_list', (data) => {
-        configSelect.innerHTML = '';
-        data.configs.forEach(config => {
-            const option = document.createElement('option');
-            option.value = config;
-            option.textContent = config;
-            configSelect.appendChild(option);
-        });
-        if (data.configs.length > 0) {
-            configSelect.dispatchEvent(new Event('change'));
+        const configs = Array.isArray(data.configs) ? data.configs : [];
+
+        if (configSelect) {
+            const previousSelection = selectedConfigName;
+            configSelect.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = configs.length ? '请选择运行配置' : '暂无配置，请先创建';
+            configSelect.appendChild(placeholder);
+
+            configs.forEach((name) => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                configSelect.appendChild(option);
+            });
+
+            if (configs.length > 0) {
+                const runtimeSelection = configs.includes(previousSelection) ? previousSelection : configs[0];
+                selectedConfigName = runtimeSelection;
+                configSelect.value = runtimeSelection;
+                requestConfigDetails(runtimeSelection, 'runtime');
+            } else {
+                selectedConfigName = null;
+                selectedConfigDetail = null;
+                configSelect.value = '';
+            }
+        }
+
+        if (editorConfigSelect) {
+            const previousEditor = editorActiveConfig || editorConfigSelect.value;
+            editorConfigSelect.innerHTML = '';
+            const editorPlaceholder = document.createElement('option');
+            editorPlaceholder.value = '';
+            editorPlaceholder.textContent = '新建配置';
+            editorConfigSelect.appendChild(editorPlaceholder);
+
+            configs.forEach((name) => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                editorConfigSelect.appendChild(option);
+            });
+
+            if (previousEditor && configs.includes(previousEditor)) {
+                editorConfigSelect.value = previousEditor;
+                requestConfigDetails(previousEditor, 'editor');
+            } else {
+                editorActiveConfig = null;
+                editorConfigSelect.value = '';
+            }
         }
     });
 
     socket.on('config_details', (data) => {
-        configInputs.name.value = data.name;
-        configInputs.urls.value = data.config.urls ? data.config.urls.join('\n') : '';
-        configInputs.threads.value = data.config.threads || '';
-        configInputs.limit_speed.value = data.config.limit_speed !== null ? data.config.limit_speed : '';
-        configInputs.traffic_limit.value = data.config.traffic_limit || '';
-        configInputs.duration.value = data.config.duration || '';
-        configInputs.count.value = data.config.count || '';
-        configInputs.cron_expr.value = data.config.cron_expr || '';
-        configInputs.interval.value = data.config.interval || '';
+        const target = data.target || pendingConfigTarget || 'runtime';
+        const name = data.name;
+        const config = data.config || {};
+
+        if (target === 'editor') {
+            populateEditorForm(name, config);
+            editorActiveConfig = name;
+            if (editorConfigSelect && editorConfigSelect.value !== name) {
+                editorConfigSelect.value = name;
+            }
+        } else {
+            selectedConfigName = name;
+            selectedConfigDetail = normalizeConfigPayload(config, name);
+            if (configSelect && configSelect.value !== name) {
+                configSelect.value = name;
+            }
+        }
+
+        if (pendingConfigName === name) {
+            pendingConfigName = null;
+            pendingConfigTarget = null;
+        }
     });
 
     socket.on('status_update', (data) => {
@@ -137,7 +667,13 @@ document.addEventListener('DOMContentLoaded', (event) => {
         document.getElementById('speed-text').textContent = data.speed || '0 B/s';
         document.getElementById('total-bytes').textContent = data.total_bytes || '0 B';
         document.getElementById('download-count').textContent = data.download_count || '0';
-        document.getElementById('current-config').textContent = data.config || 'N/A';
+        if (currentConfigEl) {
+            const safeConfigName = typeof data.config === 'string' && data.config.trim()
+                ? data.config.trim()
+                : '未命名配置';
+            currentConfigEl.textContent = safeConfigName;
+            currentConfigEl.title = safeConfigName;
+        }
 
         const speedValue = data.speed ? data.speed.match(/(\d+\.\d+)\s*MB\/s/i) : null;
         const speedMB = speedValue ? parseFloat(speedValue[1]) : 0;
@@ -145,6 +681,9 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
         startBtn.disabled = data.running;
         stopBtn.disabled = !data.running;
+
+        renderThreadStatus(data.thread_status, data.thread_count);
+        renderUrlUsage(data.url_usage_stats);
     });
 
     socket.on('history_update', (record) => {
@@ -175,6 +714,10 @@ document.addEventListener('DOMContentLoaded', (event) => {
         while (logContainer.children.length > 200) {
             logContainer.removeChild(logContainer.firstChild);
         }
+    });
+
+    socket.on('invalid_url', (data) => {
+        pushAlert(data);
     });
 
     let countdownInterval;
@@ -217,19 +760,43 @@ document.addEventListener('DOMContentLoaded', (event) => {
     
     // --- 事件监听 ---
     function getConfigFromForm() {
-        const data = {};
-        for (const key in configInputs) {
-            data[key] = configInputs[key].value || null;
-        }
-        data.urls = data.urls ? data.urls.split(/\r?\n/).filter(url => url.trim() !== '') : [];
-        ['threads', 'limit_speed', 'traffic_limit', 'duration', 'count', 'interval'].forEach(key => {
-            data[key] = data[key] ? parseInt(data[key], 10) : null;
+        const raw = {};
+        Object.keys(configInputs).forEach((key) => {
+            const element = configInputs[key];
+            if (!element) {
+                raw[key] = null;
+                return;
+            }
+            if (key === 'urls') {
+                raw.urls = element.value || '';
+                return;
+            }
+            const value = typeof element.value === 'string' ? element.value.trim() : element.value;
+            raw[key] = value === '' ? null : value;
         });
-        return data;
+
+        raw.urls = raw.urls
+            ? raw.urls
+                .split(/\r?\n/)
+                .map((url) => url.trim())
+                .filter((url) => url !== '')
+            : [];
+
+        const normalized = normalizeConfigPayload(raw, raw.name || null);
+        normalized.name = raw.name || '';
+        return normalized;
     }
 
     startBtn.addEventListener('click', () => {
-        socket.emit('start_consumer', getConfigFromForm());
+        if (!selectedConfigName || !selectedConfigDetail) {
+            pushAlert({ message: '请选择有效的运行配置后再启动。' });
+            return;
+        }
+        const payload = normalizeConfigPayload(selectedConfigDetail, selectedConfigName);
+        payload.config_name = selectedConfigName;
+        payload.name = selectedConfigName;
+        payload.urls = Array.isArray(payload.urls) ? [...payload.urls] : [];
+        socket.emit('start_consumer', payload);
     });
 
     stopBtn.addEventListener('click', () => {
@@ -240,12 +807,42 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     saveConfigBtn.addEventListener('click', () => {
         const config = getConfigFromForm();
+        if (!config.name) {
+            pushAlert({ message: '请填写配置名称后再保存。' });
+            return;
+        }
+        editorActiveConfig = config.name;
         socket.emit('save_config', { name: config.name, data: config });
     });
 
-    configSelect.addEventListener('change', () => {
-        socket.emit('get_config_details', { name: configSelect.value });
-    });
+    if (configSelect) {
+        configSelect.addEventListener('change', () => {
+            const value = configSelect.value;
+            if (!value) {
+                selectedConfigName = null;
+                selectedConfigDetail = null;
+                return;
+            }
+            requestConfigDetails(value, 'runtime');
+        });
+    }
+
+    if (editorConfigSelect) {
+        editorConfigSelect.addEventListener('change', () => {
+            const value = editorConfigSelect.value;
+            if (!value) {
+                resetConfigForm(true);
+                return;
+            }
+            requestConfigDetails(value, 'editor');
+        });
+    }
+
+    if (resetConfigBtn) {
+        resetConfigBtn.addEventListener('click', () => {
+            resetConfigForm();
+        });
+    }
 
     logSwitch.addEventListener('change', () => {
         socket.emit('toggle_logs', { enabled: logSwitch.checked });
@@ -263,43 +860,45 @@ document.addEventListener('DOMContentLoaded', (event) => {
 
     // --- Cron 表达式预览 ---
     let debounceTimer;
-    configInputs.cron_expr.addEventListener('input', () => {
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-            const cronExpr = configInputs.cron_expr.value;
-            if (cronExpr) {
-                fetch('/api/preview_cron', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cron_expr: cronExpr })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        cronPreviewEl.innerHTML = `<span class="text-danger">错误: ${data.error}</span>`;
-                    } else {
-                        let html = '<strong>接下来5次运行时间:</strong><ul>';
-                        data.forEach(ts => {
-                            html += `<li>${new Date(ts).toLocaleString()}</li>`;
-                        });
-                        html += '</ul>';
-                        cronPreviewEl.innerHTML = html;
-                    }
-                })
-                .catch(err => {
-                    cronPreviewEl.innerHTML = `<span class="text-danger">请求预览失败</span>`;
-                });
-            } else {
-                cronPreviewEl.innerHTML = '';
-            }
-        }, 500);
-    });
+    if (configInputs.cron_expr) {
+        configInputs.cron_expr.addEventListener('input', () => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                const cronExpr = configInputs.cron_expr.value;
+                if (cronExpr) {
+                    fetch('/api/preview_cron', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ cron_expr: cronExpr })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            cronPreviewEl.innerHTML = `<span class="text-danger">错误: ${data.error}</span>`;
+                        } else {
+                            let html = '<strong>接下来5次运行时间:</strong><ul>';
+                            data.forEach(ts => {
+                                html += `<li>${new Date(ts).toLocaleString()}</li>`;
+                            });
+                            html += '</ul>';
+                            cronPreviewEl.innerHTML = html;
+                        }
+                    })
+                    .catch(() => {
+                        cronPreviewEl.innerHTML = `<span class="text-danger">请求预览失败</span>`;
+                    });
+                } else if (cronPreviewEl) {
+                    cronPreviewEl.innerHTML = '';
+                }
+            }, 500);
+        });
+    }
 
     document.querySelectorAll('.cron-preset').forEach(button => {
         button.addEventListener('click', (e) => {
             e.preventDefault();
+            if (!configInputs.cron_expr) return;
             configInputs.cron_expr.value = e.target.dataset.cron;
-            // 触发input事件来更新预览
             configInputs.cron_expr.dispatchEvent(new Event('input'));
         });
     });

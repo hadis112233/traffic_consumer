@@ -18,21 +18,45 @@
             <h1><i class="bi bi-gem"></i> 流量消耗器</h1>
         </div>
 
+        <div id="notification-area" class="mb-3"></div>
+
         <div class="row">
             <!-- 左侧控制面板 -->
             <div class="col-lg-4">
                 <div class="card" data-aos="fade-right">
                     <div class="card-header"><i class="bi bi-speedometer2"></i> 核心仪表盘</div>
                     <div class="card-body">
-                        <h5>状态: <span id="running-status" class="badge bg-secondary">已停止</span></h5>
-                        <hr>
-                        <p class="mb-1"><strong>实时速度:</strong> <span id="speed-text" class="fw-bold text-primary">0 B/s</span></p>
-                        <p class="mb-1"><strong>总消耗:</strong> <span id="total-bytes">0 B</span></p>
-                        <p class="mb-1"><strong>下载数:</strong> <span id="download-count">0</span></p>
-                        <p class="mb-3"><strong>配置:</strong> <span id="current-config">N/A</span></p>
+                        <div class="d-flex align-items-center justify-content-between">
+                            <h5 class="mb-0">状态</h5>
+                            <span id="running-status" class="badge bg-secondary">已停止</span>
+                        </div>
+                        <div class="status-divider my-3"></div>
+                        <div class="stat-grid mb-3">
+                            <div class="stat-chip">
+                                <span class="stat-label">实时速度</span>
+                                <span id="speed-text" class="stat-value">0 B/s</span>
+                            </div>
+                            <div class="stat-chip">
+                                <span class="stat-label">总消耗</span>
+                                <span id="total-bytes" class="stat-value">0 B</span>
+                            </div>
+                            <div class="stat-chip">
+                                <span class="stat-label">下载数</span>
+                                <span id="download-count" class="stat-value">0</span>
+                            </div>
+                        </div>
+                        <div class="current-config-chip mb-3" title="当前配置">
+                            <span class="chip-label text-muted">当前配置</span>
+                            <span id="current-config" class="chip-value text-truncate" title="N/A">N/A</span>
+                        </div>
                         <div class="input-group mb-3">
                             <label class="input-group-text" for="config-select"><i class="bi bi-file-earmark-text"></i></label>
                             <select class="form-select" id="config-select"></select>
+                        </div>
+                        <div class="d-grid gap-2 mb-3">
+                            <button class="btn btn-outline-secondary" data-bs-toggle="offcanvas" data-bs-target="#config-editor">
+                                <i class="bi bi-sliders"></i> 打开配置编辑器
+                            </button>
                         </div>
                         <div class="d-grid gap-2">
                             <button id="start-btn" class="btn btn-primary"><i class="bi bi-play-fill"></i> 启动</button>
@@ -52,14 +76,68 @@
                     </div>
                 </div>
 
+                <div class="card" data-aos="fade-left" data-aos-delay="60">
+                    <div class="card-header"><i class="bi bi-diagram-3"></i> 线程状态</div>
+                    <div class="card-body p-0">
+                        <div class="thread-overview px-3 py-3">
+                            <div class="row g-3 align-items-center">
+                                <div class="col-md-5 col-lg-4">
+                                    <div class="chart-container ratio ratio-1x1">
+                                        <canvas id="thread-usage-chart"></canvas>
+                                    </div>
+                                </div>
+                                <div class="col-md-7 col-lg-8">
+                                    <ul class="thread-metrics list-unstyled mb-0">
+                                        <li>活跃线程：<span id="active-thread-count" class="fw-semibold">0</span> / <span id="total-thread-count">0</span></li>
+                                        <li>空闲线程：<span id="idle-thread-count" class="fw-semibold">0</span></li>
+                                        <li>失效线程：<span id="errored-thread-count" class="fw-semibold text-danger">0</span></li>
+                                        <li class="text-muted small">线程状态根据当前是否分配任务实时统计。</li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="table-responsive thread-table-wrapper">
+                            <table class="table table-sm align-middle mb-0 thread-status-table">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th scope="col" style="width: 90px;">线程</th>
+                                        <th scope="col">当前链接</th>
+                                        <th scope="col" class="text-end">状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="thread-status-list">
+                                    <tr class="placeholder-row">
+                                        <td colspan="3" class="text-center text-muted py-3">暂无线程数据。</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" data-aos="fade-left" data-aos-delay="90">
+                    <div class="card-header"><i class="bi bi-pie-chart"></i> URL 下载占比</div>
+                    <div class="card-body">
+                        <div class="row g-3 align-items-center flex-lg-row">
+                            <div class="col-xl-6">
+                                <div class="chart-container ratio ratio-1x1">
+                                    <canvas id="url-pie-chart"></canvas>
+                                </div>
+                            </div>
+                            <div class="col-xl-6">
+                                <div id="url-usage-list" class="url-usage-list">
+                                    <p class="text-muted text-center mb-0">等待数据...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="card" data-aos="fade-up" data-aos-delay="100">
                     <div class="card-header">
                         <ul class="nav nav-tabs card-header-tabs" id="info-tab" role="tablist">
                             <li class="nav-item" role="presentation">
                                 <button class="nav-link active" id="scheduler-tab" data-bs-toggle="tab" data-bs-target="#scheduler-panel" type="button" role="tab"><i class="bi bi-calendar-heart"></i> 调度与历史</button>
-                            </li>
-                            <li class="nav-item" role="presentation">
-                                <button class="nav-link" id="config-tab" data-bs-toggle="tab" data-bs-target="#config-panel" type="button" role="tab"><i class="bi bi-pencil-square"></i> 配置编辑器</button>
                             </li>
                             <li class="nav-item" role="presentation">
                                 <button class="nav-link" id="log-tab" data-bs-toggle="tab" data-bs-target="#log-panel" type="button" role="tab"><i class="bi bi-body-text"></i> 实时日志</button>
@@ -79,73 +157,6 @@
                                 </table>
                             </div>
                         </div>
-                        <!-- 配置编辑器面板 -->
-                        <div class="tab-pane fade" id="config-panel" role="tabpanel">
-                            <div class="mb-2">
-                                <label for="config-name" class="form-label">配置名称</label>
-                                <input type="text" class="form-control" id="config-name" placeholder="例如: my_pink_task">
-                            </div>
-                            <div class="mb-3">
-                                <label for="urls" class="form-label">URLs (每行一个)</label>
-                                <textarea class="form-control" id="urls" rows="3"></textarea>
-                            </div>
-
-                            <fieldset class="border p-2 rounded mb-3">
-                                <legend class="float-none w-auto px-2 h6">基础设置</legend>
-                                <div class="row">
-                                    <div class="col-md-6 mb-2">
-                                        <label for="threads" class="form-label-sm">线程数</label>
-                                        <input type="number" class="form-control form-control-sm" id="threads" placeholder="默认: 4">
-                                    </div>
-                                    <div class="col-md-6 mb-2">
-                                        <label for="limit-speed" class="form-label-sm">限速 (MB/s)</label>
-                                        <input type="number" class="form-control form-control-sm" id="limit-speed" placeholder="0为不限速">
-                                    </div>
-                                </div>
-                            </fieldset>
-
-                            <fieldset class="border p-2 rounded mb-3">
-                                <legend class="float-none w-auto px-2 h6">停止条件 (任一满足即停止)</legend>
-                                <div class="row">
-                                    <div class="col-md-4 mb-2">
-                                        <label for="traffic-limit" class="form-label-sm">流量 (MB)</label>
-                                        <input type="number" class="form-control form-control-sm" id="traffic-limit" placeholder="默认: 无限">
-                                    </div>
-                                    <div class="col-md-4 mb-2">
-                                        <label for="duration" class="form-label-sm">时长 (秒)</label>
-                                        <input type="number" class="form-control form-control-sm" id="duration" placeholder="默认: 无限">
-                                    </div>
-                                    <div class="col-md-4 mb-2">
-                                        <label for="count" class="form-label-sm">下载数</label>
-                                        <input type="number" class="form-control form-control-sm" id="count" placeholder="默认: 无限">
-                                    </div>
-                                </div>
-                            </fieldset>
-
-                            <fieldset class="border p-2 rounded">
-                                <legend class="float-none w-auto px-2 h6">调度设置 (二选一)</legend>
-                                <div class="row">
-                                    <div class="col-md-6 mb-2">
-                                        <label for="interval" class="form-label-sm">间隔 (分钟)</label>
-                                        <input type="number" class="form-control form-control-sm" id="interval" placeholder="例如: 15">
-                                    </div>
-                                    <div class="col-md-6 mb-2">
-                                        <label for="cron-expr" class="form-label-sm">Cron 表达式</label>
-                                        <input type="text" class="form-control form-control-sm" id="cron-expr" placeholder="例如: */5 * * * *">
-                                    </div>
-                                </div>
-                                <div class="mt-1 mb-2">
-                                    <small>Cron 推荐:</small>
-                                    <button class="btn btn-sm btn-outline-secondary cron-preset" data-cron="*/30 * * * *">每30分</button>
-                                    <button class="btn btn-sm btn-outline-secondary cron-preset" data-cron="0 */1 * * *">每小时</button>
-                                    <button class="btn btn-sm btn-outline-secondary cron-preset" data-cron="0 0 * * *">每天</button>
-                                </div>
-                                <div id="cron-preview" class="form-text"></div>
-                            </fieldset>
-                            <div class="d-grid mt-3">
-                                <button id="save-config-btn" class="btn btn-success"><i class="bi bi-save"></i> 保存配置</button>
-                            </div>
-                        </div>
                         <!-- 日志面板 -->
                         <div class="tab-pane fade" id="log-panel" role="tabpanel">
                             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -161,6 +172,119 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="offcanvas offcanvas-end config-offcanvas" tabindex="-1" id="config-editor" aria-labelledby="config-editor-label">
+        <div class="offcanvas-header">
+            <h5 class="offcanvas-title" id="config-editor-label"><i class="bi bi-pencil-square"></i> 配置编辑器</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="关闭"></button>
+        </div>
+        <div class="offcanvas-body">
+            <div class="mb-3">
+                <label for="config-editor-select" class="form-label-sm">选择配置</label>
+                <select class="form-select form-select-sm" id="config-editor-select">
+                    <option value="" selected>新建配置</option>
+                </select>
+            </div>
+            <div class="row g-3 config-layout">
+                <div class="col-lg-6">
+                    <div class="config-section">
+                        <div class="config-section-header">
+                            <i class="bi bi-sliders"></i>
+                            <span>基础参数</span>
+                        </div>
+                        <div class="config-section-body">
+                            <div class="mb-3">
+                                <label for="config-name" class="form-label-sm">配置名称</label>
+                                <input type="text" class="form-control form-control-sm" id="config-name" placeholder="例如：my_pink_task">
+                            </div>
+                            <div class="mb-3">
+                                <label for="urls" class="form-label-sm">下载链接</label>
+                                <textarea class="form-control form-control-sm" id="urls" rows="5" placeholder="每行一个URL"></textarea>
+                                <div class="form-text">支持批量粘贴，系统会自动忽略空行。</div>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="threads" class="form-label-sm">线程数</label>
+                                    <input type="number" class="form-control form-control-sm" id="threads" placeholder="默认：4">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="url-strategy" class="form-label-sm">URL 策略</label>
+                                    <select class="form-select form-select-sm" id="url-strategy">
+                                        <option value="">默认（系统智能）</option>
+                                        <option value="random">随机均衡</option>
+                                        <option value="round_robin">轮询顺序</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-6">
+                    <div class="config-section">
+                        <div class="config-section-header">
+                            <i class="bi bi-speedometer"></i>
+                            <span>性能与限制</span>
+                        </div>
+                        <div class="config-section-body">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="limit-speed" class="form-label-sm">限速 (MB/s)</label>
+                                    <input type="number" class="form-control form-control-sm" id="limit-speed" placeholder="0 表示不限速">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="traffic-limit" class="form-label-sm">总流量 (MB)</label>
+                                    <input type="number" class="form-control form-control-sm" id="traffic-limit" placeholder="默认：无限制">
+                                </div>
+                            </div>
+                            <div class="row g-3 mt-1">
+                                <div class="col-md-6">
+                                    <label for="duration" class="form-label-sm">时长 (秒)</label>
+                                    <input type="number" class="form-control form-control-sm" id="duration" placeholder="默认：无限制">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="count" class="form-label-sm">下载次数</label>
+                                    <input type="number" class="form-control form-control-sm" id="count" placeholder="默认：无限制">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <div class="config-section">
+                        <div class="config-section-header">
+                            <i class="bi bi-calendar-check"></i>
+                            <span>调度设置</span>
+                        </div>
+                        <div class="config-section-body">
+                            <div class="row g-3 align-items-end">
+                                <div class="col-md-4">
+                                    <label for="interval" class="form-label-sm">间隔 (分钟)</label>
+                                    <input type="number" class="form-control form-control-sm" id="interval" placeholder="例如：15">
+                                </div>
+                                <div class="col-md-4">
+                                    <label for="cron-expr" class="form-label-sm">Cron 表达式</label>
+                                    <input type="text" class="form-control form-control-sm" id="cron-expr" placeholder="例如：*/5 * * * *">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label-sm d-block">快速模板</label>
+                                    <div class="d-flex flex-wrap gap-2">
+                                        <button class="btn btn-sm btn-outline-secondary cron-preset" data-cron="*/30 * * * *">每30分钟</button>
+                                        <button class="btn btn-sm btn-outline-secondary cron-preset" data-cron="0 */1 * * *">每小时</button>
+                                        <button class="btn btn-sm btn-outline-secondary cron-preset" data-cron="0 0 * * *">每天</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="cron-preview" class="form-text mt-2"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="d-flex justify-content-between mt-3">
+                <button class="btn btn-outline-secondary" id="reset-config-btn"><i class="bi bi-arrow-counterclockwise"></i> 清空</button>
+                <button id="save-config-btn" class="btn btn-success"><i class="bi bi-save"></i> 保存配置</button>
             </div>
         </div>
     </div>

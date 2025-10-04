@@ -64,7 +64,7 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import http.client  # 添加导入http.client模块
-from requests.exceptions import ChunkedEncodingError
+from requests.exceptions import ChunkedEncodingError, RequestException, Timeout
 
 # 初始化colorama
 init(autoreset=True)
@@ -81,61 +81,115 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".traffic_consumer")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 STATS_FILE = os.path.join(CONFIG_DIR, "stats.json")
 
+DEFAULT_CHUNK_SIZE = 256 * 1024  # 256KB 默认分块大小
+
+
+class RateLimiter:
+    """简单的线程安全令牌桶限速器"""
+
+    def __init__(self, rate_bytes_per_sec):
+        self.rate = max(0, rate_bytes_per_sec)
+        self.tokens = float(self.rate)
+        self.last_refill = time.perf_counter()
+        self.lock = threading.Lock()
+
+    def acquire(self, num_bytes):
+        if self.rate <= 0:
+            return
+
+        request_bytes = min(num_bytes, self.rate)
+
+        while True:
+            with self.lock:
+                self._refill_tokens()
+
+                if self.tokens >= request_bytes:
+                    self.tokens -= request_bytes
+                    return
+
+                deficit = request_bytes - self.tokens
+
+            sleep_time = deficit / self.rate
+            time.sleep(min(sleep_time, 0.5))
+
+    def _refill_tokens(self):
+        now = time.perf_counter()
+        elapsed = now - self.last_refill
+        if elapsed <= 0:
+            return
+
+        refill = elapsed * self.rate
+        self.tokens = min(self.rate, self.tokens + refill)
+        self.last_refill = now
+
 class TrafficConsumer:
     def __init__(self, urls=None, threads=1, limit_speed=0,
                  duration=None, count=None, cron_expr=None,
                  traffic_limit=None, interval=None,
-                 config_name="default", url_strategy="random", logger=None, history_callback=None):
-       self.urls = urls if urls else DEFAULT_URLS
-       self.threads = threads if threads is not None else 1
-       self.limit_speed = limit_speed if limit_speed is not None else 0  # 限速，单位MB/s，0表示不限速
-       self.duration = duration  # 持续时间，单位秒
-       self.count = count  # 下载次数
-       self.cron_expr = cron_expr  # Cron表达式
-       self.traffic_limit = traffic_limit  # 流量限制，单位MB
-       self.interval = interval  # 间隔时间，单位分钟
-       self.config_name = config_name if config_name else "default"
-       self.url_strategy = url_strategy if url_strategy else "random"  # URL选择策略: "random" 或 "round_robin"
-       self.logger = logger if logger else self._default_logger
-       self.history_callback = history_callback
-       
-       # 统计数据
-       self.lock = threading.Lock()
-       self.total_bytes = 0
-       self.start_time = None
-       self.active = False
-       self.download_count = 0
+                 config_name="default", url_strategy="random", logger=None, history_callback=None,
+                 invalid_url_callback=None):
+        self.urls = urls if urls else DEFAULT_URLS
+        self.threads = threads if threads is not None else 1
+        self.limit_speed = limit_speed if limit_speed is not None else 0  # 限速，单位MB/s，0表示不限速
+        self.duration = duration  # 持续时间，单位秒
+        self.count = count  # 下载次数
+        self.cron_expr = cron_expr  # Cron表达式
+        self.traffic_limit = traffic_limit  # 流量限制，单位MB
+        self.interval = interval  # 间隔时间，单位分钟
+        self.config_name = config_name if config_name else "default"
+        self.url_strategy = url_strategy if url_strategy else "random"  # URL选择策略: "random" 或 "round_robin"
+        self.logger = logger if logger else self._default_logger
+        self.history_callback = history_callback
+        self.invalid_url_callback = invalid_url_callback
 
-       # 进度条
-       self.progress_bar = None
+        # 网络与控制参数
+        self.connect_timeout = 10
+        self.read_timeout = 30
+        self.max_retries = 5
+        self.retry_backoff = 1.5
+        self.chunk_size = DEFAULT_CHUNK_SIZE
+        self.rate_limiter = RateLimiter(int(self.limit_speed * 1024 * 1024)) if self.limit_speed > 0 else None
+        self._traffic_limit_triggered = False
+        self._count_limit_triggered = False
+        self.invalid_urls = set()
 
-       # 调度器
-       self.scheduler = None
+        # 统计数据
+        self.lock = threading.Lock()
+        self.total_bytes = 0
+        self.start_time = None
+        self.active = False
+        self.download_count = 0
 
-       # 历史统计数据
-       self.history = []
-       self.MAX_HISTORY_ENTRIES = 50 # 限制历史记录最大条数
-       
-       # 状态
-       self.status = "初始化"
-       self.next_run_time = None
+        # 进度条
+        self.progress_bar = None
 
-       # URL轮询计数器
-       self.url_counter = 0
-       self.url_counter_lock = threading.Lock()
+        # 调度器
+        self.scheduler = None
 
-       # URL使用统计
-       self.url_usage = {url: 0 for url in self.urls}
+        # 历史统计数据
+        self.history = []
+        self.MAX_HISTORY_ENTRIES = 50  # 限制历史记录最大条数
 
-       # 线程当前使用的URL
-       self.thread_current_urls = {}
+        # 状态
+        self.status = "初始化"
+        self.next_run_time = None
 
-       # 加权随机选择器 - 确保URL分布更均匀
-       self.url_weights = [1.0] * len(self.urls)  # 初始权重相等
-       self.weight_lock = threading.Lock()
+        # URL轮询计数器
+        self.url_counter = 0
+        self.url_counter_lock = threading.Lock()
 
-       # 线程URL分配记录（避免重复打印）
-       self.thread_url_assignments = {}
+        # URL使用统计
+        self.url_usage = {url: 0 for url in self.urls}
+
+        # 线程当前使用的URL
+        self.thread_current_urls = {}
+
+        # 加权随机选择器 - 确保URL分布更均匀
+        self.url_weights = [1.0] * len(self.urls)  # 初始权重相等
+        self.weight_lock = threading.Lock()
+
+        # 线程URL分配记录（避免重复打印）
+        self.thread_url_assignments = {}
 
     def _default_logger(self, message, color=None):
         if color:
@@ -145,17 +199,31 @@ class TrafficConsumer:
         
     def get_url_for_thread(self, thread_id):
         """为线程获取URL"""
+        available_urls = self._get_available_urls()
+        if not available_urls:
+            return None
+
         if self.url_strategy == "random":
-            return self.weighted_random_choice()
+            return self.weighted_random_choice(available_urls)
         elif self.url_strategy == "round_robin":
             with self.url_counter_lock:
-                url = self.urls[self.url_counter % len(self.urls)]
-                self.url_counter += 1
-                return url
+                for _ in range(len(self.urls)):
+                    url = self.urls[self.url_counter % len(self.urls)]
+                    self.url_counter += 1
+                    if url in self.invalid_urls:
+                        continue
+                    return url
+            # 如果轮询未命中有效URL，则回退到随机策略
+            return self.weighted_random_choice(available_urls)
         else:
-            return self.urls[0]  # 默认返回第一个URL
+            return available_urls[0]  # 默认返回第一个有效URL
 
-    def weighted_random_choice(self):
+    def _get_available_urls(self):
+        """获取仍然有效的URL列表"""
+        with self.lock:
+            return [url for url in self.urls if url not in self.invalid_urls]
+
+    def weighted_random_choice(self, candidates):
         """加权随机选择URL，确保分布更均匀"""
         with self.weight_lock:
             # 计算当前使用次数
@@ -163,22 +231,36 @@ class TrafficConsumer:
 
             if total_usage == 0:
                 # 如果还没有使用记录，完全随机选择
-                return random.choice(self.urls)
+                return random.choice(candidates)
 
             # 计算期望的平均使用次数
-            expected_avg = total_usage / len(self.urls)
+            expected_avg = total_usage / len(self.urls) if self.urls else 0
 
             # 更新权重：使用次数越少的URL权重越高
             for i, url in enumerate(self.urls):
-                current_usage = self.url_usage[url]
+                current_usage = self.url_usage.get(url, 0)
+                if url in self.invalid_urls:
+                    self.url_weights[i] = 0.0
+                    continue
+                if expected_avg == 0:
+                    self.url_weights[i] = 1.0
+                    continue
                 # 权重与使用次数成反比，使用次数少的URL权重更高
                 if current_usage < expected_avg:
                     self.url_weights[i] = expected_avg - current_usage + 1
                 else:
                     self.url_weights[i] = 1.0 / (current_usage - expected_avg + 1)
 
+            weights = []
+            for url in candidates:
+                try:
+                    idx = self.urls.index(url)
+                    weights.append(self.url_weights[idx])
+                except ValueError:
+                    weights.append(1.0)
+
             # 根据权重进行随机选择
-            return self.weighted_choice(self.urls, self.url_weights)
+            return self.weighted_choice(candidates, weights)
 
     def weighted_choice(self, choices, weights):
         """根据权重进行随机选择"""
@@ -201,139 +283,208 @@ class TrafficConsumer:
 
     def download_file(self, thread_id):
         """单个线程的下载函数"""
-        session = requests.Session()
+        session = self._create_session()
 
-        # 禁用本地缓存
+        while self.active:
+            if self.count is not None:
+                with self.lock:
+                    if self.download_count >= self.count:
+                        self._stop_due_to_count()
+                        break
+
+            current_url = self.get_url_for_thread(thread_id)
+
+            if current_url is None:
+                self.logger("未找到可用的下载链接，任务将停止。", Fore.RED)
+                with self.lock:
+                    self.thread_current_urls[thread_id] = "无可用链接"
+                self.active = False
+                break
+
+            with self.lock:
+                self.thread_current_urls[thread_id] = current_url
+                if current_url not in self.url_usage:
+                    self.url_usage[current_url] = 0
+
+            completed = self._download_with_retries(session, current_url, thread_id)
+
+            if not self.active:
+                break
+
+            if completed:
+                reached_count_limit = False
+                with self.lock:
+                    self.url_usage[current_url] += 1
+                    self.download_count += 1
+                    if self.count is not None and self.download_count >= self.count:
+                        reached_count_limit = True
+
+                if reached_count_limit:
+                    self._stop_due_to_count()
+                    break
+            else:
+                # 未完成意味着已触发限流或重试耗尽，循环将重新选择URL继续
+                continue
+
+        session.close()
+
+    def _create_session(self):
+        """创建针对下载场景优化的 Session"""
+        session = requests.Session()
         session.headers.update({
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0"
         })
+        return session
 
-        while self.active:
+    def _download_with_retries(self, session, url, thread_id):
+        """带指数退避的重试下载"""
+        attempt = 1
+        backoff = self.retry_backoff
+
+        while attempt <= self.max_retries and self.active:
             try:
-                # 检查是否达到下载次数限制（在开始下载前检查）
-                if self.count is not None:
-                    with self.lock:
-                        if self.download_count >= self.count:
-                            break
+                return self._stream_download(session, url)
+            except (RequestException, Timeout, http.client.IncompleteRead, ChunkedEncodingError) as exc:
+                if not self.active:
+                    return False
 
-                # 获取当前线程要使用的URL
-                current_url = self.get_url_for_thread(thread_id)
+                self.logger(
+                    f"线程 {thread_id} 下载出错 (第{attempt}次尝试/{self.max_retries}): {exc}",
+                    Fore.RED
+                )
 
-                # 更新线程当前使用的URL
-                with self.lock:
-                    self.thread_current_urls[thread_id] = current_url
-                    self.url_usage[current_url] += 1
+                if attempt >= self.max_retries:
+                    self._mark_url_invalid(url, exc)
+                    return False
 
-                # 如果设置了限速
-                if self.limit_speed > 0:
-                    chunk_size = self.limit_speed * 1024 * 1024 // self.threads // 10  # 每0.1秒下载的量 (MB/s转换为字节)
-                    response = session.get(current_url, stream=True)
-                    
-                    if response.status_code == 200:
-                        for chunk in response.iter_content(chunk_size=chunk_size):
-                            if not self.active:
-                                break
-                            
-                            if chunk:
-                                with self.lock:
-                                    self.total_bytes += len(chunk)
-                                    self.download_count += 1
-                                    
-                                    # 检查是否达到流量限制
-                                    if self.traffic_limit is not None:
-                                        if self.total_bytes >= self.traffic_limit * 1024 * 1024:  # 转换为字节
-                                            self.logger(f"\n已达到流量限制 {self.traffic_limit} MB", Fore.YELLOW)
-                                            if self.interval or self.cron_expr:
-                                                self.status = "等待下次执行"
-                                                self.logger("等待下次执行...", Fore.CYAN)
-                                                self.active = False
-                                                break
-                                            else:
-                                                self.logger("停止下载", Fore.YELLOW)
-                                                self.active = False
-                                                break
-                                
-                                time.sleep(0.1)  # 限制下载速度
-                else:
-                    # 不限速的情况
-                    response = session.get(current_url)
-                    
-                    if response.status_code == 200:
-                        with self.lock:
-                            self.total_bytes += len(response.content)
-                            self.download_count += 1
-                            
-                            # 检查是否达到流量限制
-                            if self.traffic_limit is not None:
-                                if self.total_bytes >= self.traffic_limit * 1024 * 1024:  # 转换为字节
-                                    self.logger(f"\n已达到流量限制 {self.traffic_limit} MB", Fore.YELLOW)
-                                    if self.interval or self.cron_expr:
-                                        self.status = "等待下次执行"
-                                        self.logger("等待下次执行...", Fore.CYAN)
-                                        self.active = False
-                                        break
-                                    else:
-                                        self.logger("停止下载", Fore.YELLOW)
-                                        self.active = False
-                                        break
-                
-                # 检查是否达到下载次数限制
-                if self.count is not None:
-                    with self.lock:
-                        if self.download_count >= self.count:
-                            self.logger(f"\n已达到下载次数限制 {self.count}", Fore.YELLOW)
-                            if self.interval or self.cron_expr:
-                                self.status = "等待下次执行"
-                                self.logger("等待下次执行...", Fore.CYAN)
-                                self.active = False
-                                break
-                            else:
-                                self.logger("停止下载", Fore.YELLOW)
-                                self.active = False
-                                break
-                            
-            except http.client.IncompleteRead as e:
-                # 处理IncompleteRead异常，记录已下载的部分数据
-                with self.lock:
-                    partial_size = len(e.partial)
-                    self.total_bytes += partial_size
-                    self.download_count += 1
-                    self.logger(f"线程 {thread_id} 连接中断: 已记录 {self.format_bytes(partial_size)} 部分数据", Fore.YELLOW)
-                time.sleep(1)  # 出错后暂停一下
-            except ChunkedEncodingError as e:
-                # 处理requests的ChunkedEncodingError异常
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 8.0)
+                attempt += 1
+
+        return False
+
+    def _mark_url_invalid(self, url, error):
+        """在重试耗尽后标记URL为无效并通知外部回调"""
+        notify_callback = None
+        payload = None
+
+        with self.lock:
+            if url in self.invalid_urls:
+                return
+            self.invalid_urls.add(url)
+            for thread_id, assigned_url in list(self.thread_current_urls.items()):
+                if assigned_url == url:
+                    self.thread_current_urls[thread_id] = f"{url} (已失效)"
+            all_invalid = len(self.invalid_urls) == len(self.urls)
+
+        with self.weight_lock:
+            if url in self.urls:
                 try:
-                    # 尝试从异常原因(通常是IncompleteRead)中提取部分数据
-                    if hasattr(e, '__context__') and isinstance(e.__context__, http.client.IncompleteRead):
-                        partial_size = len(e.__context__.partial)
-                        with self.lock:
-                            self.total_bytes += partial_size
-                            self.download_count += 1
-                            self.logger(f"线程 {thread_id} 连接中断: 已记录 {self.format_bytes(partial_size)} 部分数据", Fore.YELLOW)
-                    else:
-                        # 尝试从异常消息中提取部分数据大小
-                        error_str = str(e)
-                        if "IncompleteRead" in error_str and "bytes read" in error_str:
-                            partial_bytes_str = error_str.split("(")[1].split(" bytes read")[0]
-                            partial_size = int(partial_bytes_str)
-                            with self.lock:
-                                self.total_bytes += partial_size
-                                self.download_count += 1
-                                self.logger(f"线程 {thread_id} 连接中断: 已记录 {self.format_bytes(partial_size)} 部分数据", Fore.YELLOW)
-                        else:
-                            with self.lock:
-                                self.download_count += 1
-                                self.logger(f"线程 {thread_id} 连接中断: 无法提取部分数据大小", Fore.YELLOW)
-                except:
-                    with self.lock:
-                        self.download_count += 1
-                        self.logger(f"线程 {thread_id} 连接中断: 无法提取部分数据大小", Fore.YELLOW)
-                time.sleep(1)  # 出错后暂停一下
-            except Exception as e:
-                self.logger(f"线程 {thread_id} 下载出错: {e}", Fore.RED)
-                time.sleep(1)  # 出错后暂停一下
+                    idx = self.urls.index(url)
+                    self.url_weights[idx] = 0.0
+                except ValueError:
+                    pass
+
+        summary = f"链接 {url} 连续失败超过 {self.max_retries} 次，已标记为无效。"
+        if error:
+            summary += f" 错误信息: {error}"
+        self.logger(summary, Fore.RED)
+
+        if self.invalid_url_callback:
+            payload = {
+                "url": url,
+                "message": f"链接已连续失败 {self.max_retries} 次，已停止重试。",
+                "retries": self.max_retries
+            }
+            if error:
+                payload["error"] = str(error)
+            notify_callback = self.invalid_url_callback
+
+        if all_invalid:
+            self.logger("所有下载链接均已失效，任务即将停止。", Fore.RED)
+            self.active = False
+
+        if notify_callback and payload:
+            try:
+                notify_callback(payload)
+            except Exception as callback_exc:
+                self.logger(f"通知前端无效链接时出错: {callback_exc}", Fore.YELLOW)
+
+    def _stream_download(self, session, url):
+        """执行一次流式下载，返回是否完整结束"""
+        completed = True
+
+        with session.get(
+            url,
+            stream=True,
+            timeout=(self.connect_timeout, self.read_timeout)
+        ) as response:
+            response.raise_for_status()
+
+            for chunk in response.iter_content(chunk_size=self.chunk_size):
+                if not self.active:
+                    completed = False
+                    break
+
+                if not chunk:
+                    continue
+
+                if self.rate_limiter:
+                    self.rate_limiter.acquire(len(chunk))
+
+                with self.lock:
+                    self.total_bytes += len(chunk)
+
+                if self._check_traffic_limit():
+                    completed = False
+                    break
+
+        return completed
+
+    def _check_traffic_limit(self):
+        """检查是否达到流量限制"""
+        if self.traffic_limit is None:
+            return False
+
+        limit_bytes = self.traffic_limit * 1024 * 1024
+
+        with self.lock:
+            if self._traffic_limit_triggered:
+                return False
+
+            if self.total_bytes < limit_bytes:
+                return False
+
+            self._traffic_limit_triggered = True
+
+        self.logger(f"\n已达到流量限制 {self.traffic_limit} MB", Fore.YELLOW)
+
+        if self.interval or self.cron_expr:
+            self.status = "等待下次执行"
+            self.logger("等待下次执行...", Fore.CYAN)
+        else:
+            self.logger("停止下载", Fore.YELLOW)
+
+        self.active = False
+        return True
+
+    def _stop_due_to_count(self):
+        """达到次数限制时的统一处理"""
+        if self.count is None or self._count_limit_triggered:
+            return
+
+        self._count_limit_triggered = True
+        self.logger(f"\n已达到下载次数限制 {self.count}", Fore.YELLOW)
+
+        if self.interval or self.cron_expr:
+            self.status = "等待下次执行"
+            self.logger("等待下次执行...", Fore.CYAN)
+        else:
+            self.logger("停止下载", Fore.YELLOW)
+
+        self.active = False
     
     def display_stats(self):
         """显示流量消耗统计信息"""
